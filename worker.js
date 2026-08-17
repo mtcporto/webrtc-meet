@@ -1,169 +1,208 @@
-// Código para o Cloudflare Worker (signaling.js)
-const rooms = {};
-const signals = {};
+// Cloudflare Worker de sinalização WebRTC com estado compartilhado no Turso.
+// Configure em Settings > Variables and Secrets:
+// TURSO_DATABASE_URL=https://<database>-<organization>.turso.io
+// TURSO_AUTH_TOKEN=<database-auth-token>
 
-addEventListener('fetch', event => {
-  event.respondWith(handleRequest(event.request));
-});
+const PARTICIPANT_TTL_MS = 5 * 60 * 1000;
+const SIGNAL_TTL_MS = 2 * 60 * 1000;
 
-async function handleRequest(request) {
-  const url = new URL(request.url);
-  
-  // Adicione headers para CORS
-  const headers = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+export default {
+  async fetch(request, env) {
+    const headers = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Content-Type': 'application/json'
+    };
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers });
+    }
+
+    if (!env.TURSO_DATABASE_URL || !env.TURSO_AUTH_TOKEN) {
+      return json({ success: false, error: 'database_not_configured' }, 500, headers);
+    }
+
+    try {
+      await ensureSchema(env);
+      const url = new URL(request.url);
+
+      if (url.pathname === '/join' && request.method === 'POST') {
+        return await joinRoom(request, env, headers);
+      }
+
+      if (url.pathname === '/leave' && request.method === 'POST') {
+        return await leaveRoom(request, env, headers);
+      }
+
+      if (url.pathname === '/signal' && request.method === 'POST') {
+        return await sendSignal(request, env, headers);
+      }
+
+      if (url.pathname === '/poll' && request.method === 'GET') {
+        return await pollRoom(url, env, headers);
+      }
+
+      return json({ success: false, error: 'not_found' }, 404, headers);
+    } catch (error) {
+      console.error('Signaling error:', error);
+      return json({ success: false, error: 'signaling_unavailable' }, 500, headers);
+    }
+  }
+};
+
+async function joinRoom(request, env, headers) {
+  const { room, id, name } = await request.json();
+  if (!room || !id || !name) {
+    return json({ success: false, error: 'missing_room_id_or_name' }, 400, headers);
+  }
+
+  const now = Date.now();
+  const results = await execute(env, [
+    statement('DELETE FROM participants WHERE room = ? AND last_seen < ?', [room, now - PARTICIPANT_TTL_MS]),
+    statement(
+      'INSERT INTO participants (room, id, name, last_seen) VALUES (?, ?, ?, ?) ON CONFLICT(room, id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen',
+      [room, id, name, now]
+    ),
+    statement('SELECT id, name, last_seen FROM participants WHERE room = ? ORDER BY last_seen', [room])
+  ]);
+
+  return json({ success: true, users: rows(results[2]) }, 200, headers);
+}
+
+async function leaveRoom(request, env, headers) {
+  const { room, id } = await request.json();
+  if (!room || !id) {
+    return json({ success: false, error: 'missing_room_or_id' }, 400, headers);
+  }
+
+  await execute(env, [
+    statement('DELETE FROM participants WHERE room = ? AND id = ?', [room, id]),
+    statement('DELETE FROM signals WHERE room = ? AND (sender = ? OR target = ?)', [room, id, id])
+  ]);
+
+  return json({ success: true }, 200, headers);
+}
+
+async function sendSignal(request, env, headers) {
+  const { room, sender, target, type, data } = await request.json();
+  if (!room || !sender || !target || !type || data === undefined) {
+    return json({ success: false, error: 'missing_signal_data' }, 400, headers);
+  }
+
+  const now = Date.now();
+  const results = await execute(env, [
+    statement('DELETE FROM participants WHERE room = ? AND last_seen < ?', [room, now - PARTICIPANT_TTL_MS]),
+    statement('SELECT COUNT(*) AS participant_count FROM participants WHERE room = ? AND id IN (?, ?)', [room, sender, target])
+  ]);
+
+  if (Number(rows(results[1])[0].participant_count) !== 2) {
+    return json({ success: false, error: 'participant_not_in_room' }, 409, headers);
+  }
+
+  await execute(env, [
+    statement(
+      'INSERT INTO signals (room, sender, target, type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [room, sender, target, type, JSON.stringify(data), now]
+    ),
+    statement(
+      'DELETE FROM signals WHERE id NOT IN (SELECT id FROM signals WHERE room = ? ORDER BY id DESC LIMIT 100) OR created_at < ?',
+      [room, now - SIGNAL_TTL_MS]
+    )
+  ]);
+
+  return json({ success: true }, 200, headers);
+}
+
+async function pollRoom(url, env, headers) {
+  const room = url.searchParams.get('room');
+  const id = url.searchParams.get('id');
+  const last = Number(url.searchParams.get('last') || '0');
+  if (!room || !id || !Number.isFinite(last)) {
+    return json({ success: false, error: 'missing_poll_parameters' }, 400, headers);
+  }
+
+  const now = Date.now();
+  const results = await execute(env, [
+    statement('DELETE FROM participants WHERE room = ? AND last_seen < ?', [room, now - PARTICIPANT_TTL_MS]),
+    statement('DELETE FROM signals WHERE room = ? AND created_at < ?', [room, now - SIGNAL_TTL_MS]),
+    statement('UPDATE participants SET last_seen = ? WHERE room = ? AND id = ?', [now, room, id]),
+    statement('SELECT sender, target, type, payload, created_at FROM signals WHERE room = ? AND target = ? AND created_at > ? ORDER BY id', [room, id, last]),
+    statement('SELECT id, name, last_seen FROM participants WHERE room = ? ORDER BY last_seen', [room])
+  ]);
+
+  const signals = rows(results[3]).map(signal => ({
+    sender: signal.sender,
+    target: signal.target,
+    type: signal.type,
+    data: JSON.parse(signal.payload),
+    timestamp: Number(signal.created_at)
+  }));
+  const users = rows(results[4]).map(user => ({
+    id: user.id,
+    name: user.name,
+    timestamp: Number(user.last_seen)
+  }));
+  console.log(`Poll: room=${room}, user=${id}, signals=${signals.length}, users=${users.length}`);
+
+  return json({ success: true, signals, users }, 200, headers);
+}
+
+let schemaPromise;
+
+function ensureSchema(env) {
+  if (!schemaPromise) {
+    schemaPromise = execute(env, [
+      statement('CREATE TABLE IF NOT EXISTS participants (room TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (room, id))'),
+      statement('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL, sender TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL)'),
+      statement('CREATE INDEX IF NOT EXISTS signals_target_idx ON signals (room, target, created_at)')
+    ]);
+  }
+  return schemaPromise;
+}
+
+async function execute(env, statements) {
+  const baseUrl = env.TURSO_DATABASE_URL.replace(/^libsql:\/\//, 'https://').replace(/\/$/, '');
+  const response = await fetch(`${baseUrl}/v2/pipeline`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.TURSO_AUTH_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      requests: [...statements.map(stmt => ({ type: 'execute', stmt })), { type: 'close' }]
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Turso returned HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  const results = payload.results.slice(0, -1);
+  for (const result of results) {
+    if (result.type !== 'ok') {
+      throw new Error(`Turso query failed: ${JSON.stringify(result)}`);
+    }
+  }
+  return results.map(result => result.response.result);
+}
+
+function statement(sql, args = []) {
+  return {
+    sql,
+    args: args.map(value => ({
+      type: typeof value === 'number' ? 'integer' : 'text',
+      value: String(value)
+    }))
   };
-  
-  // Handle preflight CORS
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { headers });
-  }
-  
-  if (url.pathname === '/join') {
-    const data = await request.json();
-    const { room, id, name } = data;
+}
 
-      if (!room || !id || !name) {
-        return new Response(JSON.stringify({ success: false, error: 'missing_room_id_or_name' }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-    
-    if (!rooms[room]) rooms[room] = {};
-    if (!signals[room]) signals[room] = [];
-    
-    rooms[room][id] = { id, name, timestamp: Date.now() };
-    
-    // Remover usuários inativos (mais de 5 minutos)
-    const now = Date.now();
-    for (const userId in rooms[room]) {
-      if (now - rooms[room][userId].timestamp > 300000) {
-        delete rooms[room][userId];
-      }
-    }
-    
-    return new Response(JSON.stringify({
-      success: true,
-      users: Object.values(rooms[room])
-    }), {
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json'
-      }
-    });
-  }
+function rows(result) {
+  const columns = result.cols.map(column => column.name);
+  return result.rows.map(values => Object.fromEntries(values.map((value, index) => [columns[index], value.value])));
+}
 
-    if (url.pathname === '/leave') {
-      const data = await request.json();
-      const { room, id } = data;
-
-      if (!room || !id) {
-        return new Response(JSON.stringify({ success: false, error: 'missing_room_or_id' }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (rooms[room]) {
-        delete rooms[room][id];
-        signals[room] = (signals[room] || []).filter(signal => signal.sender !== id && signal.target !== id);
-      }
-
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { ...headers, 'Content-Type': 'application/json' }
-      });
-    }
-  
-  if (url.pathname === '/signal') {
-    const data = await request.json();
-      const { room, sender, target, type, data: signalData } = data;
-
-      if (!room || !sender || !target || !type || signalData === undefined) {
-        return new Response(JSON.stringify({ success: false, error: 'missing_signal_data' }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-
-      if (!rooms[room] || !rooms[room][sender] || !rooms[room][target]) {
-        return new Response(JSON.stringify({ success: false, error: 'participant_not_in_room' }), {
-          status: 409,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-
-      // Armazenar o sinal para ser recuperado depois.
-      if (!signals[room]) signals[room] = [];
-
-      signals[room].push({
-        sender,
-        target,
-        type,
-        data: signalData,
-        timestamp: Date.now()
-      });
-
-      // Limitar número de sinais armazenados
-      if (signals[room].length > 100) {
-        signals[room] = signals[room].slice(-100);
-    }
-    
-    return new Response(JSON.stringify({ success: true }), {
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json'
-      }
-    });
-  }
-  
-  // Melhorias no endpoint /poll
-  if (url.pathname === '/poll') {
-    const roomName = url.searchParams.get('room');
-    const userId = url.searchParams.get('id');
-    const lastTimestamp = parseInt(url.searchParams.get('last') || '0');
-
-      if (!roomName || !userId || Number.isNaN(lastTimestamp)) {
-        return new Response(JSON.stringify({ success: false, error: 'missing_poll_parameters' }), {
-          status: 400,
-          headers: { ...headers, 'Content-Type': 'application/json' }
-        });
-      }
-    
-    // Marcar como ativo
-    if (rooms[roomName] && rooms[roomName][userId]) {
-      rooms[roomName][userId].timestamp = Date.now();
-    }
-    
-    // Buscar sinais pendentes para este usuário com TTL maior (2 minutos)
-    const pendingSignals = [];
-    if (signals[roomName]) {
-      const now = Date.now();
-      signals[roomName] = signals[roomName].filter(signal => now - signal.timestamp < 120000); // 2 minutos TTL
-      
-      signals[roomName].forEach(signal => {
-        if (signal.target === userId && signal.timestamp > lastTimestamp) {
-          pendingSignals.push(signal);
-        }
-      });
-    }
-    
-    // Debug: mostrar contagem de sinais e usuários
-    console.log(`Poll: sala=${roomName}, usuário=${userId}, sinais=${pendingSignals.length}, usuários=${rooms[roomName] ? Object.keys(rooms[roomName]).length : 0}`);
-    
-    return new Response(JSON.stringify({
-      success: true,
-      signals: pendingSignals,
-      users: rooms[roomName] ? Object.values(rooms[roomName]) : []
-    }), {
-      headers: {
-        ...headers,
-        'Content-Type': 'application/json'
-      }
-    });
-  }
-  
-  return new Response('Not Found', { status: 404, headers });
+function json(data, status, headers) {
+  return new Response(JSON.stringify(data), { status, headers });
 }
