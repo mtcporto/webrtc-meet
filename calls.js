@@ -46,6 +46,7 @@ const leaveButton = document.getElementById('leave-button');
 const cameraSelect = document.getElementById('camera-select');
 const microphoneSelect = document.getElementById('microphone-select');
 const speakerSelect = document.getElementById('speaker-select');
+const enableRemoteAudioButton = document.getElementById('enable-remote-audio');
 const mainVideoContainer = document.getElementById('main-video-container');
 const pipContainer = document.getElementById('pip-container');
 const audioSettingsButton = document.getElementById('audio-settings');
@@ -234,6 +235,8 @@ function attachRemoteStream(stream, video, userId) {
   video.srcObject = stream;
   video.autoplay = true;
   video.playsInline = true;
+  video.muted = true;
+  video.dataset.remoteVideo = 'true';
   video.play().catch(error => {
     console.warn(`Autoplay bloqueado para ${userId}:`, error);
     showRemotePlayButton(video, userId);
@@ -254,6 +257,13 @@ function showRemotePlayButton(video, userId) {
       .catch(error => console.warn(`Não foi possível reproduzir vídeo de ${userId}:`, error));
   });
   container.appendChild(playButton);
+}
+
+function enableRemoteAudio() {
+  document.querySelectorAll('video[data-remote-video="true"]').forEach(video => {
+    video.muted = false;
+    video.play().catch(error => console.warn('Não foi possível ativar áudio remoto:', error));
+  });
 }
 
 // Função para iniciar stream local
@@ -546,6 +556,9 @@ leaveButton.addEventListener('click', () => {
   disconnect();
   window.location.href = 'index.html';
 });
+
+enableRemoteAudioButton.addEventListener('click', enableRemoteAudio);
+document.addEventListener('pointerdown', enableRemoteAudio, { once: true });
 
 // Mostrar/ocultar menus de configurações
 audioSettingsButton.addEventListener('click', (e) => {
