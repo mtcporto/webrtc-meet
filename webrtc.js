@@ -49,6 +49,7 @@ let userId;
 let username;
 let isPolling = false;
 let lastPollTime = 0;
+const senderKinds = new WeakMap();
 
 // Variável para armazenar status de áudio e vídeo
 let audioStatus = true;
@@ -125,9 +126,24 @@ export async function replaceLocalStream(stream) {
   const tracksByKind = new Map(stream.getTracks().map(track => [track.kind, track]));
   await Promise.all(Object.values(peerConnections).flatMap(pc =>
     pc.getSenders().map(sender => {
-      const replacement = tracksByKind.get(sender.track?.kind);
-      return replacement ? sender.replaceTrack(replacement) : Promise.resolve();
+      const kind = senderKinds.get(sender) || sender.track?.kind;
+      const replacement = kind === 'audio' && !audioStatus ? null : tracksByKind.get(kind);
+      return sender.replaceTrack(replacement || null);
     })
+  ));
+}
+
+// Desconecta a track de áudio dos RTCRtpSenders ao mutar. Isso interrompe o
+// envio de RTP imediatamente, em vez de depender só de track.enabled.
+export function setLocalAudioEnabled(enabled) {
+  audioStatus = enabled;
+  const audioTrack = localStream?.getAudioTracks()[0];
+  if (audioTrack) audioTrack.enabled = enabled;
+
+  return Promise.all(Object.values(peerConnections).flatMap(pc =>
+    pc.getSenders()
+      .filter(sender => senderKinds.get(sender) === 'audio')
+      .map(sender => sender.replaceTrack(enabled ? audioTrack || null : null))
   ));
 }
 
@@ -309,7 +325,8 @@ function createPeerConnection(peerId, peerName, initiator, addRemoteVideo) {
   if (localStream) {
     console.log(`Adicionando ${localStream.getTracks().length} tracks locais à conexão`);
     localStream.getTracks().forEach(track => {
-      pc.addTrack(track, localStream);
+      const sender = pc.addTrack(track, localStream);
+      senderKinds.set(sender, track.kind);
     });
   }
   

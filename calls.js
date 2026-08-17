@@ -1,4 +1,4 @@
-import { connectToRoom, addStreamToVideoElement, disconnect, getDebugInfo, replaceLocalStream, updateMediaStatus } from './webrtc.js';
+import { connectToRoom, addStreamToVideoElement, disconnect, getDebugInfo, replaceLocalStream, setLocalAudioEnabled, updateMediaStatus } from './webrtc.js';
 
 // Adicione isso no topo do arquivo para verificar importações
 
@@ -270,10 +270,10 @@ function enableRemoteAudio() {
 async function startLocalStream(videoDeviceId, audioDeviceId) {
   const constraints = {
     audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
-    // Em celulares, a câmera frontal é a escolha natural para chamadas.
+    // Em celulares, usar obrigatoriamente a câmera frontal para chamadas.
     video: videoDeviceId
       ? { deviceId: { exact: videoDeviceId } }
-      : { facingMode: { ideal: 'user' } }
+      : (isMobileDevice() ? { facingMode: { exact: 'user' } } : true)
   };
   
   const previousStream = localStream;
@@ -373,8 +373,11 @@ async function updateDeviceList() {
     console.log("Dispositivos de áudio agrupados:", Array.from(audioDeviceGroups.values()));
     console.log("Melhor headset detectado:", bestHeadset);
     
-    // Priorizar a câmera frontal na primeira entrada em dispositivos móveis.
-    const frontCamera = cameras.find(device => /facing front|front|user|frontal/i.test(device.label));
+    // Priorizar a câmera frontal, usando a câmera já aberta como fonte de
+    // verdade quando o navegador não fornece um label confiável.
+    const activeVideoDeviceId = localStream?.getVideoTracks()[0]?.getSettings().deviceId;
+    const frontCamera = cameras.find(device => /facing front|front|user|frontal/i.test(device.label))
+      || cameras.find(device => device.deviceId === activeVideoDeviceId);
 
     // Adicionar câmeras ao select
     cameras.forEach(device => {
@@ -524,10 +527,16 @@ function normalizeRoomCode(value) {
   return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+function isMobileDevice() {
+  return navigator.userAgentData?.mobile === true || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 // Event Listeners
 toggleAudioButton.addEventListener('click', () => {
   audioEnabled = !audioEnabled;
-  localStream.getAudioTracks().forEach(track => track.enabled = audioEnabled);
+  setLocalAudioEnabled(audioEnabled).catch(error => {
+    console.error('Não foi possível atualizar o envio de áudio:', error);
+  });
   toggleAudioButton.innerHTML = audioEnabled ? 
     '<i class="fas fa-microphone"></i>' : 
     '<i class="fas fa-microphone-slash"></i>';
