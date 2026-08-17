@@ -69,7 +69,7 @@ function generateRandomId() {
 
 // Função para conectar à sala WebRTC
 export async function connectToRoom(room, stream, addRemoteVideo) {
-  roomId = room;
+  roomId = room.toLowerCase().replace(/[^a-z0-9]/g, '');
   userId = generateRandomId();
   username = localStorage.getItem('userName') || 'Anônimo';
   localStream = stream;
