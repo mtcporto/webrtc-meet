@@ -52,7 +52,8 @@ export default {
 };
 
 async function joinRoom(request, env, headers) {
-  const { room, id, name } = await request.json();
+  let { room, id, name } = await request.json();
+  room = normalizeRoomId(room);
   if (!room || !id || !name) {
     return json({ success: false, error: 'missing_room_id_or_name' }, 400, headers);
   }
@@ -71,7 +72,8 @@ async function joinRoom(request, env, headers) {
 }
 
 async function leaveRoom(request, env, headers) {
-  const { room, id } = await request.json();
+  let { room, id } = await request.json();
+  room = normalizeRoomId(room);
   if (!room || !id) {
     return json({ success: false, error: 'missing_room_or_id' }, 400, headers);
   }
@@ -85,7 +87,8 @@ async function leaveRoom(request, env, headers) {
 }
 
 async function sendSignal(request, env, headers) {
-  const { room, sender, target, type, data } = await request.json();
+  let { room, sender, target, type, data } = await request.json();
+  room = normalizeRoomId(room);
   if (!room || !sender || !target || !type || data === undefined) {
     return json({ success: false, error: 'missing_signal_data' }, 400, headers);
   }
@@ -115,7 +118,7 @@ async function sendSignal(request, env, headers) {
 }
 
 async function pollRoom(url, env, headers) {
-  const room = url.searchParams.get('room');
+  const room = normalizeRoomId(url.searchParams.get('room'));
   const id = url.searchParams.get('id');
   const last = Number(url.searchParams.get('last') || '0');
   if (!room || !id || !Number.isFinite(last)) {
@@ -205,4 +208,8 @@ function rows(result) {
 
 function json(data, status, headers) {
   return new Response(JSON.stringify(data), { status, headers });
+}
+
+function normalizeRoomId(room) {
+  return String(room || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }

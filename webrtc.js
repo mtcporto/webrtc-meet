@@ -69,7 +69,7 @@ function generateRandomId() {
 
 // Função para conectar à sala WebRTC
 export async function connectToRoom(room, stream, addRemoteVideo) {
-  roomId = room.toLowerCase().replace(/[^a-z0-9]/g, '');
+  roomId = normalizeRoomId(room);
   userId = generateRandomId();
   username = localStorage.getItem('userName') || 'Anônimo';
   localStream = stream;
@@ -117,6 +117,22 @@ export async function connectToRoom(room, stream, addRemoteVideo) {
     console.error('Erro ao conectar ao servidor de sinalização:', error);
     return false;
   }
+}
+
+// Atualiza as tracks enviadas quando o usuário troca câmera ou microfone.
+export async function replaceLocalStream(stream) {
+  localStream = stream;
+  const tracksByKind = new Map(stream.getTracks().map(track => [track.kind, track]));
+  await Promise.all(Object.values(peerConnections).flatMap(pc =>
+    pc.getSenders().map(sender => {
+      const replacement = tracksByKind.get(sender.track?.kind);
+      return replacement ? sender.replaceTrack(replacement) : Promise.resolve();
+    })
+  ));
+}
+
+function normalizeRoomId(room) {
+  return String(room).trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 // Função para iniciar polling melhorada

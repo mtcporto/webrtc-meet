@@ -62,14 +62,15 @@ function generateRoomCode() {
   return code;
 }
 
+function normalizeRoomCode(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 // Manipular formulário de entrada
 joinForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const userName = joinNameInput.value.trim();
-  let roomCode = roomCodeInput.value.trim();
-  
-  // Formatar código se necessário (remover traços se inseridos)
-  roomCode = roomCode.replace(/[^a-z0-9]/g, '');
+  const roomCode = normalizeRoomCode(roomCodeInput.value);
   
   if (!userName || !roomCode) {
     alert('Por favor, preencha todos os campos.');
@@ -97,7 +98,7 @@ createForm.addEventListener('submit', (e) => {
   localStorage.setItem('userName', userName);
   
   // Gerar código aleatório
-  const roomCode = generateRoomCode();
+  const roomCode = normalizeRoomCode(generateRoomCode());
   
   // Sempre redirecionar para o formato simples e seguro
   window.location.href = `calls.html?room=${roomCode}`;

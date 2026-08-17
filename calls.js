@@ -1,4 +1,4 @@
-import { connectToRoom, addStreamToVideoElement, disconnect, getDebugInfo, updateMediaStatus } from './webrtc.js';
+import { connectToRoom, addStreamToVideoElement, disconnect, getDebugInfo, replaceLocalStream, updateMediaStatus } from './webrtc.js';
 
 // Adicione isso no topo do arquivo para verificar importações
 
@@ -38,6 +38,7 @@ let videoEnabled = true;
 const userName = localStorage.getItem('userName') || 'Anônimo';
 let activeSpeakerId = null;
 let localVideoContainer = null;
+let remoteAudioEnabled = false;
 
 // Elementos DOM
 const toggleAudioButton = document.getElementById('toggle-audio');
@@ -63,7 +64,7 @@ const participantCountElement = document.getElementById('participant-count');
 
 // Obter código da sala a partir da URL
 const urlParams = new URLSearchParams(window.location.search);
-const roomCode = urlParams.get('room');
+const roomCode = normalizeRoomCode(urlParams.get('room') || '');
 
 // Verificar se temos um código de sala
 if (!roomCode) {
@@ -74,7 +75,7 @@ if (!roomCode) {
 // Atualizar UI com informações da sala
 roomCodeElement.textContent = formatRoomCode(roomCode);
 document.title = `Meet: ${formatRoomCode(roomCode)}`;
-meetingLinkInput.value = `${window.location.origin}/calls.html?room=${roomCode}`;
+meetingLinkInput.value = `${window.location.origin}/calls.html?room=${encodeURIComponent(roomCode)}`;
 
 // Atualizar relógio
 function updateClock() {
@@ -89,27 +90,26 @@ setInterval(updateClock, 60000);
 async function init() {
   try {
     // Inicializar o stream local
-    const stream = await startLocalStream();
+    await startLocalStream();
     
+    await updateDeviceList();
+
     // Criar container para vídeo local
-    localVideoContainer = createVideoContainer('local', userName + ' (Você)', stream);
+    localVideoContainer = createVideoContainer('local', userName + ' (Você)', localStream);
     localVideoContainer.classList.add('local-video');
     
     // Adicionar ao container principal primeiro
     mainVideoContainer.appendChild(localVideoContainer);
     
     // Conectar à sala WebRTC
-    const connected = await connectToRoom(roomCode, stream, handleRemoteStream);
+    const connected = await connectToRoom(roomCode, localStream, handleRemoteStream);
     
     if (!connected) {
       alert('Erro ao conectar à sala. Por favor, tente novamente.');
     }
     
-    // Atualizar lista de dispositivos
-    await updateDeviceList();
-    
     // Detectar áudio do usuário local para active speaker
-    detectAudioActivity(stream, 'local');
+    detectAudioActivity(localStream, 'local');
   } catch (error) {
     console.error('Erro ao inicializar:', error);
     alert(`Erro ao acessar câmera/microfone: ${error.message}`);
@@ -235,7 +235,7 @@ function attachRemoteStream(stream, video, userId) {
   video.srcObject = stream;
   video.autoplay = true;
   video.playsInline = true;
-  video.muted = true;
+  video.muted = !remoteAudioEnabled;
   video.dataset.remoteVideo = 'true';
   video.play().catch(error => {
     console.warn(`Autoplay bloqueado para ${userId}:`, error);
@@ -260,6 +260,7 @@ function showRemotePlayButton(video, userId) {
 }
 
 function enableRemoteAudio() {
+  remoteAudioEnabled = true;
   document.querySelectorAll('video[data-remote-video="true"]').forEach(video => {
     video.muted = false;
     video.play().catch(error => console.warn('Não foi possível ativar áudio remoto:', error));
@@ -273,13 +274,11 @@ async function startLocalStream(videoDeviceId, audioDeviceId) {
     video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true
   };
   
-  // Se já existe um stream, pare-o
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-  }
-  
-  // Obter novo stream
-  localStream = await navigator.mediaDevices.getUserMedia(constraints);
+  const previousStream = localStream;
+  const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+  localStream = nextStream;
+  await replaceLocalStream(nextStream);
+  if (previousStream) previousStream.getTracks().forEach(track => track.stop());
   
   // Se já temos um container de vídeo, atualizar o stream
   const localVideo = document.getElementById('video-local');
@@ -287,7 +286,7 @@ async function startLocalStream(videoDeviceId, audioDeviceId) {
     localVideo.srcObject = localStream;
   }
   
-  return localStream;
+  return nextStream;
 }
 
 // Melhorar a lógica para priorizar headsets na função updateDeviceList()
@@ -511,6 +510,10 @@ function formatRoomCode(code) {
   }
   
   return code;
+}
+
+function normalizeRoomCode(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 // Event Listeners
