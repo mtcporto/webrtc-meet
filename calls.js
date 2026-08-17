@@ -197,8 +197,7 @@ function handleRemoteStream(stream, userId, userName) {
   if (existingContainer) {
     const video = document.getElementById(`video-${userId}`);
     if (video) {
-      video.srcObject = stream;
-      video.play().catch(e => console.log('Erro ao reproduzir vídeo:', e));
+      attachRemoteStream(stream, video, userId);
     }
     return;
   }
@@ -227,8 +226,34 @@ function handleRemoteStream(stream, userId, userName) {
   // Forçar reprodução do vídeo
   const video = document.getElementById(`video-${userId}`);
   if (video) {
-    video.play().catch(e => console.log('Erro ao reproduzir vídeo remoto:', e));
+    attachRemoteStream(stream, video, userId);
   }
+}
+
+function attachRemoteStream(stream, video, userId) {
+  video.srcObject = stream;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.play().catch(error => {
+    console.warn(`Autoplay bloqueado para ${userId}:`, error);
+    showRemotePlayButton(video, userId);
+  });
+}
+
+function showRemotePlayButton(video, userId) {
+  const container = video.parentElement;
+  if (!container || container.querySelector('.video-play-button')) return;
+
+  const playButton = document.createElement('button');
+  playButton.className = 'video-play-button';
+  playButton.title = 'Reproduzir vídeo de ' + userId;
+  playButton.innerHTML = '<i class="fas fa-play"></i>';
+  playButton.addEventListener('click', () => {
+    video.play()
+      .then(() => playButton.remove())
+      .catch(error => console.warn(`Não foi possível reproduzir vídeo de ${userId}:`, error));
+  });
+  container.appendChild(playButton);
 }
 
 // Função para iniciar stream local
