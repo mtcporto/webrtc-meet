@@ -58,6 +58,7 @@ const meetingLinkInput = document.getElementById('meeting-link');
 const copyLinkButton = document.getElementById('copy-link');
 const closeShareButton = document.getElementById('close-share');
 const roomCodeElement = document.getElementById('room-code');
+const participantCountElement = document.getElementById('participant-count');
 
 // Obter código da sala a partir da URL
 const urlParams = new URLSearchParams(window.location.search);
@@ -518,7 +519,7 @@ toggleVideoButton.addEventListener('click', () => {
 
 leaveButton.addEventListener('click', () => {
   disconnect();
-  window.location.href = '/calls/';
+  window.location.href = 'index.html';
 });
 
 // Mostrar/ocultar menus de configurações
@@ -645,5 +646,10 @@ window.addEventListener('video-active', (event) => {
     container.classList.add('video-active');
     container.classList.remove('video-off');
   }
+});
+
+window.addEventListener('room-participants', (event) => {
+  const count = event.detail.users.length;
+  participantCountElement.textContent = `${count} ${count === 1 ? 'participante' : 'participantes'}`;
 });
 

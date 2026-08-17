@@ -55,6 +55,27 @@ async function handleRequest(request) {
       }
     });
   }
+
+    if (url.pathname === '/leave') {
+      const data = await request.json();
+      const { room, id } = data;
+
+      if (!room || !id) {
+        return new Response(JSON.stringify({ success: false, error: 'missing_room_or_id' }), {
+          status: 400,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
+
+      if (rooms[room]) {
+        delete rooms[room][id];
+        signals[room] = (signals[room] || []).filter(signal => signal.sender !== id && signal.target !== id);
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...headers, 'Content-Type': 'application/json' }
+      });
+    }
   
   if (url.pathname === '/signal') {
     const data = await request.json();

@@ -90,6 +90,7 @@ export async function connectToRoom(room, stream, addRemoteVideo) {
     
     if (data.success) {
       console.log(`Conectado ao servidor de sinalização`, data);
+      publishParticipants(data.users);
       
       // Conectar com os usuários existentes - MODIFICAÇÃO AQUI
       // Ordene por ID para garantir que apenas um lado inicia
@@ -136,6 +137,7 @@ function startPolling(addRemoteVideo) {
       if (data.success) {
         console.log(`Poll: ${data.users.length} usuários, ${data.signals?.length || 0} sinais`);
         console.log("Usuários na sala:", data.users);
+        publishParticipants(data.users);
         
         // Processar novos usuários
         data.users.forEach(user => {
@@ -166,6 +168,10 @@ function startPolling(addRemoteVideo) {
   
   // Iniciar o polling
   poll();
+}
+
+function publishParticipants(users) {
+  window.dispatchEvent(new CustomEvent('room-participants', { detail: { users } }));
 }
 
 // Processa sinais recebidos
@@ -437,6 +443,20 @@ async function createAndSendOffer(pc, peerId) {
 export function disconnect() {
   log("Desconectando de todas as chamadas");
   isPolling = false;
+
+  if (roomId && userId) {
+    const body = JSON.stringify({ room: roomId, id: userId });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(`${SIGNALING_SERVER}/leave`, new Blob([body], { type: 'application/json' }));
+    } else {
+      fetch(`${SIGNALING_SERVER}/leave`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true
+      });
+    }
+  }
   
   // Fechar todas as conexões peer
   Object.values(peerConnections).forEach(pc => pc.close());
