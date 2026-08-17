@@ -141,7 +141,8 @@ function startPolling(addRemoteVideo) {
         data.users.forEach(user => {
           if (user.id !== userId && !peerConnections[user.id]) {
             console.log(`Novo usuário: ${user.name} (${user.id})`);
-            createPeerConnection(user.id, user.name, true, addRemoteVideo);
+              const shouldInitiate = userId < user.id;
+              createPeerConnection(user.id, user.name, shouldInitiate, addRemoteVideo);
           }
         });
         
@@ -199,6 +200,7 @@ async function handleSignal(signal, addRemoteVideo) {
       }
       
       await pc.setRemoteDescription(new RTCSessionDescription(signalData));
+      await addPendingIceCandidates(pc);
       
       console.log("Criando resposta");
       const answer = await pc.createAnswer();
@@ -210,6 +212,7 @@ async function handleSignal(signal, addRemoteVideo) {
     } else if (type === 'answer') {
       console.log(`Recebeu resposta, definindo descrição remota`);
       await pc.setRemoteDescription(new RTCSessionDescription(signalData));
+        await addPendingIceCandidates(pc);
     } else if (type === 'candidate') {
       console.log(`Recebeu candidato ICE`);
       try {
@@ -229,6 +232,17 @@ async function handleSignal(signal, addRemoteVideo) {
   }
 }
 
+  async function addPendingIceCandidates(pc) {
+    if (!pc.pendingCandidates) return;
+
+    const pendingCandidates = pc.pendingCandidates;
+    pc.pendingCandidates = [];
+
+    for (const candidate of pendingCandidates) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  }
+
 // Envia um sinal para outro peer
 async function sendSignal(target, type, data) {
   try {
@@ -239,6 +253,7 @@ async function sendSignal(target, type, data) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
+          room: roomId,
         sender: userId,
         target,
         type,
@@ -346,15 +361,6 @@ function createPeerConnection(peerId, peerName, initiator, addRemoteVideo) {
       };
     };
   }
-  
-  // Lidar com estado da negociação
-  pc.onnegotiationneeded = () => {
-    log(`Negociação necessária para ${peerId}`);
-    if (initiator) {
-      log(`Iniciando negociação com ${peerId}`);
-      createAndSendOffer(pc, peerId);
-    }
-  };
   
   // Lidar com estado da conexão ICE
   pc.oniceconnectionstatechange = () => {

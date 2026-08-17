@@ -24,6 +24,13 @@ async function handleRequest(request) {
   if (url.pathname === '/join') {
     const data = await request.json();
     const { room, id, name } = data;
+
+      if (!room || !id || !name) {
+        return new Response(JSON.stringify({ success: false, error: 'missing_room_id_or_name' }), {
+          status: 400,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
     
     if (!rooms[room]) rooms[room] = {};
     if (!signals[room]) signals[room] = [];
@@ -51,33 +58,36 @@ async function handleRequest(request) {
   
   if (url.pathname === '/signal') {
     const data = await request.json();
-    const { sender, target, type, data: signalData } = data;
-    
-    // Encontrar a sala certa
-    let roomName = null;
-    for (const room in rooms) {
-      if (rooms[room][sender] && rooms[room][target]) {
-        roomName = room;
-        break;
+      const { room, sender, target, type, data: signalData } = data;
+
+      if (!room || !sender || !target || !type || signalData === undefined) {
+        return new Response(JSON.stringify({ success: false, error: 'missing_signal_data' }), {
+          status: 400,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
       }
-    }
-    
-    if (roomName) {
-      // Armazenar o sinal para ser recuperado depois
-      if (!signals[roomName]) signals[roomName] = [];
-      
-      signals[roomName].push({
+
+      if (!rooms[room] || !rooms[room][sender] || !rooms[room][target]) {
+        return new Response(JSON.stringify({ success: false, error: 'participant_not_in_room' }), {
+          status: 409,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Armazenar o sinal para ser recuperado depois.
+      if (!signals[room]) signals[room] = [];
+
+      signals[room].push({
         sender,
         target,
         type,
         data: signalData,
         timestamp: Date.now()
       });
-      
+
       // Limitar número de sinais armazenados
-      if (signals[roomName].length > 100) {
-        signals[roomName] = signals[roomName].slice(-100);
-      }
+      if (signals[room].length > 100) {
+        signals[room] = signals[room].slice(-100);
     }
     
     return new Response(JSON.stringify({ success: true }), {
@@ -93,6 +103,13 @@ async function handleRequest(request) {
     const roomName = url.searchParams.get('room');
     const userId = url.searchParams.get('id');
     const lastTimestamp = parseInt(url.searchParams.get('last') || '0');
+
+      if (!roomName || !userId || Number.isNaN(lastTimestamp)) {
+        return new Response(JSON.stringify({ success: false, error: 'missing_poll_parameters' }), {
+          status: 400,
+          headers: { ...headers, 'Content-Type': 'application/json' }
+        });
+      }
     
     // Marcar como ativo
     if (rooms[roomName] && rooms[roomName][userId]) {

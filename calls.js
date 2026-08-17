@@ -72,7 +72,7 @@ if (!roomCode) {
 // Atualizar UI com informações da sala
 roomCodeElement.textContent = formatRoomCode(roomCode);
 document.title = `Meet: ${formatRoomCode(roomCode)}`;
-meetingLinkInput.value = `${window.location.origin}/calls/calls.html?room=${roomCode}`;
+meetingLinkInput.value = `${window.location.origin}/calls.html?room=${roomCode}`;
 
 // Atualizar relógio
 function updateClock() {
