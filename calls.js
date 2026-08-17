@@ -47,7 +47,6 @@ const leaveButton = document.getElementById('leave-button');
 const cameraSelect = document.getElementById('camera-select');
 const microphoneSelect = document.getElementById('microphone-select');
 const speakerSelect = document.getElementById('speaker-select');
-const enableRemoteAudioButton = document.getElementById('enable-remote-audio');
 const mainVideoContainer = document.getElementById('main-video-container');
 const pipContainer = document.getElementById('pip-container');
 const audioSettingsButton = document.getElementById('audio-settings');
@@ -271,7 +270,10 @@ function enableRemoteAudio() {
 async function startLocalStream(videoDeviceId, audioDeviceId) {
   const constraints = {
     audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
-    video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true
+    // Em celulares, a câmera frontal é a escolha natural para chamadas.
+    video: videoDeviceId
+      ? { deviceId: { exact: videoDeviceId } }
+      : { facingMode: { ideal: 'user' } }
   };
   
   const previousStream = localStream;
@@ -371,11 +373,17 @@ async function updateDeviceList() {
     console.log("Dispositivos de áudio agrupados:", Array.from(audioDeviceGroups.values()));
     console.log("Melhor headset detectado:", bestHeadset);
     
+    // Priorizar a câmera frontal na primeira entrada em dispositivos móveis.
+    const frontCamera = cameras.find(device => /facing front|front|user|frontal/i.test(device.label));
+
     // Adicionar câmeras ao select
     cameras.forEach(device => {
       const option = document.createElement('option');
       option.value = device.deviceId;
       option.text = device.label || `Câmera ${cameraSelect.options.length + 1}`;
+      if (frontCamera && device.deviceId === frontCamera.deviceId) {
+        option.selected = true;
+      }
       cameraSelect.appendChild(option);
     });
     
@@ -560,7 +568,6 @@ leaveButton.addEventListener('click', () => {
   window.location.href = 'index.html';
 });
 
-enableRemoteAudioButton.addEventListener('click', enableRemoteAudio);
 document.addEventListener('pointerdown', enableRemoteAudio, { once: true });
 
 // Mostrar/ocultar menus de configurações

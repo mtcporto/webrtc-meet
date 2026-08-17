@@ -476,6 +476,20 @@ body.login-page {
     height: 44px;
     margin: 0 4px;
   }
+
+  /* Painel independente do botão: evita que menus fiquem cortados fora da tela. */
+  .settings-menu {
+    position: fixed;
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    width: auto;
+    max-height: calc(100dvh - 180px);
+    overflow-y: auto;
+    transform: none;
+    margin-bottom: 0;
+    z-index: 200;
+  }
   
   /* PIP Container mobile */
   .pip-container {
