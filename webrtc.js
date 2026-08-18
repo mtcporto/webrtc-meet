@@ -50,6 +50,7 @@ let username;
 let isPolling = false;
 let lastPollTime = 0;
 const senderKinds = new WeakMap();
+const signalQueues = new Map();
 
 // Variável para armazenar status de áudio e vídeo
 let audioStatus = true;
@@ -286,7 +287,7 @@ async function handleSignal(signal, addRemoteVideo) {
 
 // Envia um sinal para outro peer
 async function sendSignal(target, type, data) {
-  try {
+  const send = async () => {
     log(`Enviando sinal ${type} para ${target}`);
     const response = await fetch(`${SIGNALING_SERVER}/signal`, {
       method: 'POST',
@@ -306,10 +307,25 @@ async function sendSignal(target, type, data) {
     if (result.success) {
       log(`Sinal ${type} enviado com sucesso para ${target}`);
     } else {
-      log(`Falha ao enviar sinal ${type} para ${target}`);
+      throw new Error(result.error || `Falha ao enviar sinal ${type}`);
     }
+  };
+
+  // Ofertas/respostas precisam chegar antes dos candidatos ICE. Sem esta fila,
+  // requisições concorrentes podem ser persistidas fora de ordem e o polling
+  // avança o cursor sem nunca entregar a descrição SDP atrasada.
+  const previous = signalQueues.get(target) || Promise.resolve();
+  const queued = previous.catch(() => {}).then(send);
+  signalQueues.set(target, queued);
+
+  try {
+    await queued;
   } catch (error) {
     log(`Erro ao enviar sinal ${type} para ${target}: ${error.message}`);
+  } finally {
+    if (signalQueues.get(target) === queued) {
+      signalQueues.delete(target);
+    }
   }
 }
 
