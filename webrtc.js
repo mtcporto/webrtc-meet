@@ -137,13 +137,16 @@ export async function replaceLocalStream(stream) {
 // envio de RTP imediatamente, em vez de depender só de track.enabled.
 export function setLocalAudioEnabled(enabled) {
   audioStatus = enabled;
-  const audioTrack = localStream?.getAudioTracks()[0];
-  if (audioTrack) audioTrack.enabled = enabled;
+  const audioTracks = localStream?.getAudioTracks() || [];
+  audioTracks.forEach(track => {
+    track.enabled = enabled;
+  });
+  const audioTrack = audioTracks[0] || null;
 
   return Promise.all(Object.values(peerConnections).flatMap(pc =>
     pc.getSenders()
-      .filter(sender => senderKinds.get(sender) === 'audio')
-      .map(sender => sender.replaceTrack(enabled ? audioTrack || null : null))
+      .filter(sender => (senderKinds.get(sender) || sender.track?.kind) === 'audio')
+      .map(sender => sender.replaceTrack(enabled ? audioTrack : null))
   ));
 }
 

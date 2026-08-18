@@ -231,38 +231,39 @@ function handleRemoteStream(stream, userId, userName) {
 }
 
 function attachRemoteStream(stream, video, userId) {
-  video.srcObject = stream;
+  // ontrack pode disparar uma vez para áudio e outra para vídeo. Não atribuir
+  // novamente o mesmo stream evita AbortError e botões de play falsos.
+  if (video.srcObject !== stream) {
+    video.srcObject = stream;
+  }
   video.autoplay = true;
   video.playsInline = true;
   video.muted = !remoteAudioEnabled;
   video.dataset.remoteVideo = 'true';
-  video.play().catch(error => {
-    console.warn(`Autoplay bloqueado para ${userId}:`, error);
-    showRemotePlayButton(video, userId);
-  });
-}
 
-function showRemotePlayButton(video, userId) {
-  const container = video.parentElement;
-  if (!container || container.querySelector('.video-play-button')) return;
+  video.play().catch(async error => {
+    if (error.name === 'AbortError') return;
 
-  const playButton = document.createElement('button');
-  playButton.className = 'video-play-button';
-  playButton.title = 'Reproduzir vídeo de ' + userId;
-  playButton.innerHTML = '<i class="fas fa-play"></i>';
-  playButton.addEventListener('click', () => {
-    video.play()
-      .then(() => playButton.remove())
-      .catch(error => console.warn(`Não foi possível reproduzir vídeo de ${userId}:`, error));
+    // Se o navegador bloquear autoplay com som, mantém o vídeo rodando mudo.
+    // O próximo toque na página tenta liberar o áudio novamente.
+    console.warn(`Autoplay com áudio bloqueado para ${userId}:`, error);
+    video.muted = true;
+    try {
+      await video.play();
+    } catch (mutedError) {
+      console.warn(`Não foi possível reproduzir o vídeo de ${userId}:`, mutedError);
+    }
   });
-  container.appendChild(playButton);
 }
 
 function enableRemoteAudio() {
   remoteAudioEnabled = true;
   document.querySelectorAll('video[data-remote-video="true"]').forEach(video => {
     video.muted = false;
-    video.play().catch(error => console.warn('Não foi possível ativar áudio remoto:', error));
+    video.play().catch(error => {
+      console.warn('Não foi possível ativar áudio remoto:', error);
+      video.muted = true;
+    });
   });
 }
 
@@ -532,11 +533,17 @@ function isMobileDevice() {
 }
 
 // Event Listeners
-toggleAudioButton.addEventListener('click', () => {
-  audioEnabled = !audioEnabled;
-  setLocalAudioEnabled(audioEnabled).catch(error => {
+toggleAudioButton.addEventListener('click', async () => {
+  const nextAudioEnabled = !audioEnabled;
+
+  try {
+    await setLocalAudioEnabled(nextAudioEnabled);
+    audioEnabled = nextAudioEnabled;
+  } catch (error) {
     console.error('Não foi possível atualizar o envio de áudio:', error);
-  });
+    return;
+  }
+
   toggleAudioButton.innerHTML = audioEnabled ? 
     '<i class="fas fa-microphone"></i>' : 
     '<i class="fas fa-microphone-slash"></i>';
@@ -577,7 +584,9 @@ leaveButton.addEventListener('click', () => {
   window.location.href = 'index.html';
 });
 
-document.addEventListener('pointerdown', enableRemoteAudio, { once: true });
+// Repetir em cada interação é intencional: participantes podem chegar depois
+// do primeiro toque e navegadores móveis podem revogar a tentativa anterior.
+document.addEventListener('pointerdown', enableRemoteAudio);
 
 // Mostrar/ocultar menus de configurações
 audioSettingsButton.addEventListener('click', (e) => {

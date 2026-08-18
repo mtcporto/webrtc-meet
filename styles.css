@@ -494,14 +494,15 @@ body.login-page {
   /* PIP Container mobile */
   .pip-container {
     position: absolute;
-    bottom: 75px;
+    top: 12px;
     right: 10px;
-    top: auto;
-    max-height: 30%;
+    bottom: auto;
+    max-height: calc(100% - 24px);
     max-width: 40%;
     flex-direction: column;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    z-index: 120;
   }
   
   .pip-container .video-container {
