@@ -38,7 +38,7 @@ let videoEnabled = true;
 const userName = localStorage.getItem('userName') || 'Anônimo';
 let activeSpeakerId = null;
 let localVideoContainer = null;
-let remoteAudioEnabled = false;
+let remoteAudioEnabled = true;
 
 // Elementos DOM
 const toggleAudioButton = document.getElementById('toggle-audio');
@@ -47,6 +47,7 @@ const leaveButton = document.getElementById('leave-button');
 const cameraSelect = document.getElementById('camera-select');
 const microphoneSelect = document.getElementById('microphone-select');
 const speakerSelect = document.getElementById('speaker-select');
+const enableRemoteAudioButton = document.getElementById('enable-remote-audio');
 const mainVideoContainer = document.getElementById('main-video-container');
 const pipContainer = document.getElementById('pip-container');
 const audioSettingsButton = document.getElementById('audio-settings');
@@ -230,6 +231,55 @@ function handleRemoteStream(stream, userId, userName) {
   }
 }
 
+async function applySelectedAudioOutput(video) {
+  if (typeof video.setSinkId !== 'function' || !speakerSelect.value) return;
+
+  try {
+    if (video.sinkId !== speakerSelect.value) {
+      await video.setSinkId(speakerSelect.value);
+    }
+  } catch (error) {
+    console.warn('Não foi possível aplicar a saída de áudio selecionada:', error);
+  }
+}
+
+function updateRemoteAudioPrompt() {
+  const hasMutedRemoteVideo = Array.from(
+    document.querySelectorAll('video[data-remote-video="true"]')
+  ).some(video => video.muted);
+
+  enableRemoteAudioButton.classList.toggle('hidden', !hasMutedRemoteVideo);
+}
+
+async function playRemoteStream(video, userId) {
+  video.muted = !remoteAudioEnabled;
+  video.volume = 1;
+  const playPromise = video.play();
+  void applySelectedAudioOutput(video);
+
+  try {
+    await playPromise;
+    updateRemoteAudioPrompt();
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+
+    if (!video.muted && error.name === 'NotAllowedError') {
+      // Alguns navegadores ainda exigem um gesto explícito. Mantemos o vídeo
+      // rodando e mostramos um controle visível para liberar o som.
+      video.muted = true;
+      updateRemoteAudioPrompt();
+      try {
+        await video.play();
+      } catch (mutedError) {
+        console.warn(`Não foi possível reproduzir o vídeo de ${userId}:`, mutedError);
+      }
+      return;
+    }
+
+    console.warn(`Não foi possível reproduzir a mídia de ${userId}:`, error);
+  }
+}
+
 function attachRemoteStream(stream, video, userId) {
   // ontrack pode disparar uma vez para áudio e outra para vídeo. Não atribuir
   // novamente o mesmo stream evita AbortError e botões de play falsos.
@@ -238,33 +288,33 @@ function attachRemoteStream(stream, video, userId) {
   }
   video.autoplay = true;
   video.playsInline = true;
-  video.muted = !remoteAudioEnabled;
   video.dataset.remoteVideo = 'true';
 
-  video.play().catch(async error => {
-    if (error.name === 'AbortError') return;
-
-    // Se o navegador bloquear autoplay com som, mantém o vídeo rodando mudo.
-    // O próximo toque na página tenta liberar o áudio novamente.
-    console.warn(`Autoplay com áudio bloqueado para ${userId}:`, error);
-    video.muted = true;
-    try {
-      await video.play();
-    } catch (mutedError) {
-      console.warn(`Não foi possível reproduzir o vídeo de ${userId}:`, mutedError);
-    }
-  });
+  void playRemoteStream(video, userId);
 }
 
-function enableRemoteAudio() {
+async function enableRemoteAudio() {
   remoteAudioEnabled = true;
-  document.querySelectorAll('video[data-remote-video="true"]').forEach(video => {
+  const remoteVideos = Array.from(document.querySelectorAll('video[data-remote-video="true"]'));
+
+  await Promise.all(remoteVideos.map(async video => {
     video.muted = false;
-    video.play().catch(error => {
+    video.volume = 1;
+    // Chamar play() antes de qualquer await preserva a ativação transitória
+    // fornecida pelo toque/clique que disparou esta função.
+    const playPromise = video.play();
+    void applySelectedAudioOutput(video);
+
+    try {
+      await playPromise;
+    } catch (error) {
+      if (error.name === 'AbortError') return;
       console.warn('Não foi possível ativar áudio remoto:', error);
       video.muted = true;
-    });
-  });
+    }
+  }));
+
+  updateRemoteAudioPrompt();
 }
 
 // Função para iniciar stream local
@@ -279,6 +329,8 @@ async function startLocalStream(videoDeviceId, audioDeviceId) {
   
   const previousStream = localStream;
   const nextStream = await navigator.mediaDevices.getUserMedia(constraints);
+  nextStream.getAudioTracks().forEach(track => { track.enabled = audioEnabled; });
+  nextStream.getVideoTracks().forEach(track => { track.enabled = videoEnabled; });
   localStream = nextStream;
   await replaceLocalStream(nextStream);
   if (previousStream) previousStream.getTracks().forEach(track => track.stop());
@@ -584,9 +636,19 @@ leaveButton.addEventListener('click', () => {
   window.location.href = 'index.html';
 });
 
+window.addEventListener('pagehide', disconnect);
+window.addEventListener('pageshow', event => {
+  if (event.persisted) window.location.reload();
+});
+
 // Repetir em cada interação é intencional: participantes podem chegar depois
 // do primeiro toque e navegadores móveis podem revogar a tentativa anterior.
-document.addEventListener('pointerdown', enableRemoteAudio);
+document.addEventListener('pointerdown', event => {
+  if (!enableRemoteAudioButton.contains(event.target)) {
+    void enableRemoteAudio();
+  }
+});
+enableRemoteAudioButton.addEventListener('click', () => { void enableRemoteAudio(); });
 
 // Mostrar/ocultar menus de configurações
 audioSettingsButton.addEventListener('click', (e) => {
@@ -620,15 +682,9 @@ microphoneSelect.addEventListener('change', async () => {
   await startLocalStream(cameraSelect.value, microphoneSelect.value);
 });
 
-speakerSelect.addEventListener('change', () => {
-  if (typeof HTMLMediaElement.prototype.setSinkId === 'function') {
-    const videos = document.querySelectorAll('video');
-    videos.forEach(video => {
-      if (video.id !== 'video-local') {
-        video.setSinkId(speakerSelect.value);
-      }
-    });
-  }
+speakerSelect.addEventListener('change', async () => {
+  const remoteVideos = document.querySelectorAll('video[data-remote-video="true"]');
+  await Promise.all(Array.from(remoteVideos, video => applySelectedAudioOutput(video)));
 });
 
 // Compartilhar link da reunião
@@ -713,6 +769,8 @@ window.addEventListener('video-active', (event) => {
     container.classList.remove('video-off');
   }
 });
+
+window.addEventListener('remote-peer-removed', updateRemoteAudioPrompt);
 
 window.addEventListener('room-participants', (event) => {
   const count = event.detail.users.length;

@@ -226,6 +226,30 @@ body.login-page {
   z-index: 10;
 }
 
+.audio-playback-prompt {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 24px;
+  background-color: var(--primary-color);
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 130;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+.audio-playback-prompt:hover,
+.audio-playback-prompt:focus-visible {
+  background-color: #1765cc;
+}
+
 /* Barra de controles */
 .call-controls {
   position: fixed;
@@ -475,6 +499,10 @@ body.login-page {
     width: 44px;
     height: 44px;
     margin: 0 4px;
+  }
+
+  .audio-playback-prompt {
+    bottom: calc(88px + env(safe-area-inset-bottom));
   }
 
   /* Painel independente do botão: evita que menus fiquem cortados fora da tela. */
