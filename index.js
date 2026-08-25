@@ -9,31 +9,44 @@ const joinNameInput = document.getElementById('join-name');
 const createNameInput = document.getElementById('create-name');
 const roomCodeInput = document.getElementById('room-code');
 
-// Alternar entre abas
-switchToCreateBtn.addEventListener('click', (e) => {
-  e.preventDefault();
-  joinTab.classList.remove('active');
-  createTab.classList.add('active');
-  
-  // Copiar o nome se já foi digitado
-  if (joinNameInput.value) {
-    createNameInput.value = joinNameInput.value;
-  } else if (localStorage.getItem('userName')) {
-    createNameInput.value = localStorage.getItem('userName');
-  }
-});
+function setActiveTab(tab) {
+  const showCreate = tab === 'create';
+  createTab.classList.toggle('active', showCreate);
+  createTab.hidden = !showCreate;
+  joinTab.classList.toggle('active', !showCreate);
+  joinTab.hidden = showCreate;
+  switchToCreateBtn.classList.toggle('active', showCreate);
+  switchToCreateBtn.setAttribute('aria-selected', String(showCreate));
+  switchToCreateBtn.tabIndex = showCreate ? 0 : -1;
+  switchToJoinBtn.classList.toggle('active', !showCreate);
+  switchToJoinBtn.setAttribute('aria-selected', String(!showCreate));
+  switchToJoinBtn.tabIndex = showCreate ? -1 : 0;
 
-switchToJoinBtn.addEventListener('click', (e) => {
-  e.preventDefault();
-  createTab.classList.remove('active');
-  joinTab.classList.add('active');
-  
-  // Copiar o nome se já foi digitado
-  if (createNameInput.value) {
-    joinNameInput.value = createNameInput.value;
-  } else if (localStorage.getItem('userName')) {
-    joinNameInput.value = localStorage.getItem('userName');
+  if (showCreate) {
+    createNameInput.value = joinNameInput.value || localStorage.getItem('userName') || '';
+  } else {
+    joinNameInput.value = createNameInput.value || localStorage.getItem('userName') || '';
   }
+}
+
+switchToCreateBtn.addEventListener('click', () => setActiveTab('create'));
+switchToJoinBtn.addEventListener('click', () => setActiveTab('join'));
+
+const modeTabs = [switchToCreateBtn, switchToJoinBtn];
+modeTabs.forEach((tab, index) => {
+  tab.addEventListener('keydown', event => {
+    let nextIndex = null;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % modeTabs.length;
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + modeTabs.length) % modeTabs.length;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = modeTabs.length - 1;
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    const nextTab = modeTabs[nextIndex];
+    setActiveTab(nextTab === switchToCreateBtn ? 'create' : 'join');
+    nextTab.focus();
+  });
 });
 
 // Preencher o nome do usuário se já estiver salvo
@@ -63,7 +76,24 @@ function generateRoomCode() {
 }
 
 function normalizeRoomCode(value) {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const rawValue = value.trim();
+
+  try {
+    const parsedUrl = new URL(rawValue, window.location.origin);
+    const queryRoom = parsedUrl.searchParams.get('room');
+    if (queryRoom) {
+      return queryRoom.toLowerCase().replace(/[^a-z0-9]/g, '');
+    }
+
+    const pathRoom = parsedUrl.pathname.split('/meet/')[1];
+    if (pathRoom) {
+      return pathRoom.toLowerCase().replace(/[^a-z0-9]/g, '');
+    }
+  } catch {
+    // Se não for uma URL, tratamos a entrada como código da sala.
+  }
+
+  return rawValue.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 // Manipular formulário de entrada
@@ -109,6 +139,7 @@ const urlParams = new URLSearchParams(window.location.search);
 const urlCode = urlParams.get('room');
 if (urlCode) {
   roomCodeInput.value = urlCode;
+  setActiveTab('join');
 }
 
 // Se a URL contém código de sala no formato /meet/XXX-XXXX-XXX (para compatibilidade)
@@ -117,5 +148,8 @@ if (urlPath.includes('/meet/')) {
   const pathCode = urlPath.split('/meet/')[1];
   if (pathCode) {
     roomCodeInput.value = pathCode;
+    setActiveTab('join');
   }
 }
+
+document.getElementById('current-year').textContent = String(new Date().getFullYear());

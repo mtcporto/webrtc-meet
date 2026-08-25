@@ -2,49 +2,72 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC Meet</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="description" content="Reunião por vídeo no AgoraOne.">
+    <meta name="theme-color" content="#080d17">
+    <meta name="color-scheme" content="dark">
+    <meta name="application-name" content="AgoraOne">
+    <meta property="og:title" content="Encontro no AgoraOne">
+    <meta property="og:description" content="One place to meet.">
+    <meta property="og:type" content="website">
+    <title>AgoraOne</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%234f46e5'/%3E%3Cpath d='M18 44 29 18h6l11 26h-7l-2-6H27l-2 6h-7Zm11-12h6l-3-8-3 8Z' fill='white'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.15.4/css/all.css">
     <link rel="stylesheet" href="styles.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/webrtc-adapter/8.1.2/adapter.min.js" crossorigin="anonymous"></script>
 </head>
-<body>
+<body class="call-page">
     <div class="meet-container">
-        <!-- Header com informações da reunião -->
         <header class="meet-header">
+            <a class="brand brand-compact" href="index.html" aria-label="Voltar ao AgoraOne">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 48 48" role="img"><path d="M13 34 21.5 14h5L35 34h-5.5l-1.8-4.8h-7.5L18.4 34H13Zm9-9.5h4L24 19l-2 5.5Z"/></svg>
+                </span>
+                <span class="brand-wordmark">Agora<span>One</span></span>
+            </a>
+
             <div class="meet-info">
-                <h1 id="room-code">...</h1>
-                <span class="separator">|</span>
-                <div id="current-time"></div>
-                <span class="separator">|</span>
-                <div id="participant-count" aria-live="polite">1 participante</div>
+                <h1 id="room-code" class="room-code">...</h1>
+                <span class="separator" aria-hidden="true"></span>
+                <time id="current-time"></time>
+                <span class="separator optional-separator" aria-hidden="true"></span>
+                <div id="participant-count" class="participant-count" data-count="1" role="status" aria-live="polite" aria-atomic="true"><i class="fas fa-user-friends" aria-hidden="true"></i><span class="participant-count-visual" aria-hidden="true">1 participante</span><span class="visually-hidden participant-count-announcement">1 participante</span></div>
             </div>
+
             <div class="meet-actions">
-                <button id="share-button" class="action-button" title="Compartilhar link da reunião">
-                    <i class="fas fa-user-plus"></i>
+                <button id="share-button" class="invite-button" type="button" title="Convidar participantes" aria-label="Convidar participantes">
+                    <i class="fas fa-user-plus" aria-hidden="true"></i>
+                    <span>Convidar</span>
                 </button>
             </div>
         </header>
 
-        <!-- Container principal de vídeos -->
-        <div class="video-area">
-            <div class="main-video-container" id="main-video-container">
-                <!-- Video principal será inserido aqui -->
+        <main class="video-area">
+            <div class="stage-glow" aria-hidden="true"></div>
+            <div class="main-video-container" id="main-video-container" aria-live="polite"></div>
+
+            <button id="enable-remote-audio" class="audio-playback-prompt hidden" type="button">
+                <i class="fas fa-volume-up" aria-hidden="true"></i>
+                <span>Ativar som da reunião</span>
+            </button>
+
+            <div id="screen-share-status" class="presentation-status hidden" role="status">
+                <span><i class="fas fa-desktop" aria-hidden="true"></i> Você está apresentando</span>
+                <button id="stop-screen-share" type="button">Parar</button>
             </div>
-            
-            <!-- Controles de chamada -->
-            <div class="call-controls">
+
+            <div class="call-controls" role="toolbar" aria-label="Controles da chamada">
                 <div class="control-group">
-                    <button id="toggle-audio" class="control-button" title="Ligar/Desligar microfone">
-                        <i class="fas fa-microphone"></i>
+                    <button id="toggle-audio" class="control-button" type="button" title="Desativar microfone" aria-label="Microfone" aria-pressed="true" disabled>
+                        <i class="fas fa-microphone" aria-hidden="true"></i>
                     </button>
                     <div class="settings-menu-container">
-                        <button id="audio-settings" class="settings-button" title="Configurações de áudio">
-                            <i class="fas fa-chevron-up"></i>
+                        <button id="audio-settings" class="settings-button" type="button" title="Configurações de áudio" aria-label="Abrir configurações de áudio" aria-expanded="false" aria-controls="audio-settings-menu" disabled>
+                            <i class="fas fa-chevron-up" aria-hidden="true"></i>
                         </button>
-                        <div id="audio-settings-menu" class="settings-menu hidden">
-                            <h3>Configurações de áudio</h3>
+                        <div id="audio-settings-menu" class="settings-menu hidden" role="group" aria-label="Configurações de áudio">
+                            <div class="settings-heading"><i class="fas fa-sliders-h" aria-hidden="true"></i><h2>Áudio</h2></div>
                             <div class="settings-item">
                                 <label for="microphone-select">Microfone</label>
                                 <select id="microphone-select" class="form-select"></select>
@@ -56,17 +79,17 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="control-group">
-                    <button id="toggle-video" class="control-button" title="Ligar/Desligar câmera">
-                        <i class="fas fa-video"></i>
+                    <button id="toggle-video" class="control-button" type="button" title="Desativar câmera" aria-label="Câmera" aria-pressed="true" disabled>
+                        <i class="fas fa-video" aria-hidden="true"></i>
                     </button>
                     <div class="settings-menu-container">
-                        <button id="video-settings" class="settings-button" title="Configurações de vídeo">
-                            <i class="fas fa-chevron-up"></i>
+                        <button id="video-settings" class="settings-button" type="button" title="Configurações de vídeo" aria-label="Abrir configurações de vídeo" aria-expanded="false" aria-controls="video-settings-menu" disabled>
+                            <i class="fas fa-chevron-up" aria-hidden="true"></i>
                         </button>
-                        <div id="video-settings-menu" class="settings-menu hidden">
-                            <h3>Configurações de vídeo</h3>
+                        <div id="video-settings-menu" class="settings-menu hidden" role="group" aria-label="Configurações de vídeo">
+                            <div class="settings-heading"><i class="fas fa-video" aria-hidden="true"></i><h2>Vídeo</h2></div>
                             <div class="settings-item">
                                 <label for="camera-select">Câmera</label>
                                 <select id="camera-select" class="form-select"></select>
@@ -74,39 +97,40 @@
                         </div>
                     </div>
                 </div>
-                
-                <button id="debug-button" class="control-button" title="Informações de diagnóstico">
-                    <i class="fas fa-bug"></i>
+
+                <button id="screen-share-button" class="control-button share-screen-button" type="button" title="Compartilhar tela" aria-label="Compartilhar tela" aria-pressed="false" disabled>
+                    <i class="fas fa-desktop" aria-hidden="true"></i>
                 </button>
 
-                <button id="leave-button" class="control-button end-call" title="Encerrar chamada">
-                    <i class="fas fa-phone-slash"></i>
+                <span class="control-divider" aria-hidden="true"></span>
+
+                <button id="leave-button" class="control-button end-call" type="button" title="Encerrar chamada" aria-label="Encerrar chamada">
+                    <i class="fas fa-phone-slash" aria-hidden="true"></i>
                 </button>
             </div>
-            
-            <!-- Participantes em miniatura -->
-            <div class="pip-container" id="pip-container">
-                <!-- Miniaturas serão inseridas aqui -->
-            </div>
-        </div>
+
+            <section class="pip-container" id="pip-container" aria-label="Outros participantes"></section>
+        </main>
     </div>
-    
-    <!-- Diálogo de compartilhamento -->
-    <div id="share-dialog" class="dialog hidden">
+
+    <div id="share-dialog" class="dialog hidden" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <div class="dialog-content">
-            <h3>Compartilhar link da reunião</h3>
-            <p>Convide pessoas para esta reunião compartilhando o link:</p>
+            <button id="close-share-icon" class="dialog-close" type="button" aria-label="Fechar convite"><i class="fas fa-times" aria-hidden="true"></i></button>
+            <span class="dialog-icon" aria-hidden="true"><i class="fas fa-user-plus"></i></span>
+            <h2 id="share-dialog-title">Convide para a sua ágora</h2>
+            <p>Compartilhe este link com quem você quer reunir.</p>
+            <label class="visually-hidden" for="meeting-link">Link da reunião</label>
             <div class="share-link">
                 <input type="text" id="meeting-link" readonly>
-                <button id="copy-link" class="btn btn-primary">
-                    <i class="fas fa-copy"></i>
+                <button id="copy-link" class="copy-button" type="button" aria-label="Copiar link">
+                    <i class="fas fa-copy" aria-hidden="true"></i><span>Copiar</span>
                 </button>
             </div>
-            <button id="close-share" class="btn btn-secondary mt-3">Fechar</button>
+            <p id="copy-feedback" class="copy-feedback" aria-live="polite"></p>
+            <button id="close-share" class="btn dialog-done" type="button">Pronto</button>
         </div>
     </div>
 
     <script type="module" src="calls.js" crossorigin="anonymous"></script>
-    <script type="module" src="webrtc.js" crossorigin="anonymous"></script>
 </body>
 </html>
