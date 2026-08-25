@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/webrtc/:path*",
+      "destination": "https://webrtc.mosaicoworkers.workers.dev/:path*"
+    }
+  ]
+}

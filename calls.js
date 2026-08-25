@@ -48,6 +48,7 @@ let cameraVideoTrack = null;
 let displayVideoTrack = null;
 let isScreenSharing = false;
 let screenShareTransition = false;
+let screenShareFeedbackTimer = null;
 let callEnding = false;
 let mediaRequestGeneration = 0;
 let deviceChangeTimer = null;
@@ -85,10 +86,14 @@ const roomCodeElement = document.getElementById('room-code');
 const participantCountElement = document.getElementById('participant-count');
 const screenShareButton = document.getElementById('screen-share-button');
 const screenShareStatus = document.getElementById('screen-share-status');
+const screenShareStatusText = document.getElementById('screen-share-status-text');
 const stopScreenShareButton = document.getElementById('stop-screen-share');
 const closeShareIconButton = document.getElementById('close-share-icon');
 const copyFeedback = document.getElementById('copy-feedback');
 const meetContainer = document.querySelector('.meet-container');
+const connectionStatus = document.getElementById('connection-status');
+const connectionStatusText = document.getElementById('connection-status-text');
+const connectionStatusIcon = connectionStatus?.querySelector('i');
 
 // Obter código da sala a partir da URL
 const urlParams = new URLSearchParams(window.location.search);
@@ -117,6 +122,25 @@ function updateClock() {
 updateClock();
 setInterval(updateClock, 60000);
 
+function delay(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function connectWithRecovery() {
+  let failedRounds = 0;
+
+  while (!callEnding) {
+    const connected = await connectToRoom(roomCode, localStream, handleRemoteStream);
+    if (connected || callEnding) return connected;
+
+    failedRounds += 1;
+    const retryDelay = Math.min(2500 + (failedRounds * 1500), 10000);
+    await delay(retryDelay);
+  }
+
+  return false;
+}
+
 // Inicializar
 async function init() {
   try {
@@ -138,11 +162,7 @@ async function init() {
     updateCallMediaControls();
     
     // Conectar à sala WebRTC
-    const connected = await connectToRoom(roomCode, localStream, handleRemoteStream);
-    
-    if (!connected) {
-      alert('Erro ao conectar à sala. Por favor, tente novamente.');
-    }
+    await connectWithRecovery();
     
   } catch (error) {
     mediaInitialized = false;
@@ -535,9 +555,15 @@ async function updateDeviceList(applyPreferredRoute = true) {
     const storedSpeakerId = localStorage.getItem('agoraone:speaker-id');
     const findById = (list, id) => list.find(device => device.deviceId === id);
 
+    // O Chromium expõe o auricular interno de alguns celulares Samsung como
+    // "Headset earpiece". Ele não é um headset conectado e não deve ganhar
+    // prioridade sobre o viva-voz nem sobre uma escolha persistida do usuário.
+    const earpiecePattern = /earpiece|receiver|auricular interno|receptor/i;
     const accessoryPattern = /headset|headphone|wired|bluetooth|usb|fone|auricular|buds|airpods/i;
     const speakerphonePattern = /speaker\s?phone|viva.?voz|alto.?falante/i;
-    const accessoryMicrophone = microphones.find(device => accessoryPattern.test(device.label));
+    const accessoryMicrophone = microphones.find(device => (
+      accessoryPattern.test(device.label) && !earpiecePattern.test(device.label)
+    ));
     const speakerphoneMicrophone = microphones.find(device => speakerphonePattern.test(device.label));
     const storedMicrophone = findById(microphones, storedMicrophoneId);
     const storedMicrophoneIsGeneric = storedMicrophone
@@ -550,8 +576,7 @@ async function updateDeviceList(applyPreferredRoute = true) {
       || findById(cameras, activeVideoDeviceId)
       || cameras.find(device => /facing front|front|user|frontal/i.test(device.label))
       || cameras[0];
-    const preferredMicrophone = (applyPreferredRoute && isMobileDevice() ? accessoryMicrophone : null)
-      || (!storedMicrophoneIsGeneric ? storedMicrophone : null)
+    const preferredMicrophone = (!storedMicrophoneIsGeneric ? storedMicrophone : null)
       || automaticMobileMicrophone
       || storedMicrophone
       || findById(microphones, activeAudioDeviceId)
@@ -708,13 +733,16 @@ function updateCallMediaControls() {
 }
 
 function setScreenShareUi(active) {
+  clearTimeout(screenShareFeedbackTimer);
   screenShareButton.classList.toggle('active', active);
   screenShareButton.setAttribute('aria-pressed', String(active));
-  screenShareButton.setAttribute('aria-label', 'Compartilhar tela');
+  screenShareButton.setAttribute('aria-label', active ? 'Parar compartilhamento de tela' : 'Compartilhar tela');
   screenShareButton.title = active ? 'Parar compartilhamento de tela' : 'Compartilhar tela';
   screenShareButton.innerHTML = active
     ? '<i class="fas fa-stop" aria-hidden="true"></i>'
     : '<i class="fas fa-desktop" aria-hidden="true"></i>';
+  screenShareStatusText.textContent = 'Você está apresentando';
+  stopScreenShareButton.classList.remove('hidden');
   screenShareStatus.classList.toggle('hidden', !active);
 
   setCaptureControlsLocked(active || screenShareTransition);
@@ -731,6 +759,19 @@ function setScreenShareUi(active) {
   }
 }
 
+function showScreenShareFeedback(message, duration = 0) {
+  clearTimeout(screenShareFeedbackTimer);
+  screenShareStatusText.textContent = message;
+  stopScreenShareButton.classList.add('hidden');
+  screenShareStatus.classList.remove('hidden');
+
+  if (duration > 0) {
+    screenShareFeedbackTimer = setTimeout(() => {
+      if (!isScreenSharing) screenShareStatus.classList.add('hidden');
+    }, duration);
+  }
+}
+
 async function startScreenShare() {
   if (!mediaInitialized || !localStream || isScreenSharing || screenShareTransition || callEnding) return;
   if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -742,6 +783,7 @@ async function startScreenShare() {
   screenShareTransition = true;
   screenShareButton.disabled = true;
   setCaptureControlsLocked(true);
+  showScreenShareFeedback('Escolha uma tela ou janela no navegador…');
   let displayTrackInstalled = false;
 
   try {
@@ -827,9 +869,15 @@ async function startScreenShare() {
         void localVideo.play().catch(() => {});
       }
     }
-    if (!callEnding && error.name !== 'NotAllowedError' && error.name !== 'AbortError') {
-      console.error('Não foi possível compartilhar a tela:', error);
-      alert('Não foi possível iniciar o compartilhamento de tela.');
+    if (!callEnding) {
+      console.warn('Compartilhamento de tela não iniciado:', error.name, error.message);
+      const selectionWasCancelled = error.name === 'NotAllowedError' || error.name === 'AbortError';
+      showScreenShareFeedback(
+        selectionWasCancelled
+          ? 'Compartilhamento não iniciado.'
+          : 'Não foi possível compartilhar. Verifique a permissão do navegador.',
+        3600
+      );
     }
   } finally {
     screenShareTransition = false;
@@ -1265,6 +1313,30 @@ screenShareButton.addEventListener('click', () => {
 });
 
 stopScreenShareButton.addEventListener('click', () => { void stopScreenShare(); });
+
+window.addEventListener('signaling-state', (event) => {
+  if (!connectionStatus || !connectionStatusText || !connectionStatusIcon) return;
+
+  const { state } = event.detail;
+  connectionStatus.dataset.state = state;
+
+  if (state === 'connected') {
+    connectionStatus.classList.add('hidden');
+    return;
+  }
+
+  connectionStatus.classList.remove('hidden');
+  if (state === 'unavailable') {
+    connectionStatusIcon.className = 'fas fa-exclamation-triangle';
+    connectionStatusText.textContent = 'Sinalização indisponível. Nova tentativa em instantes…';
+    return;
+  }
+
+  connectionStatusIcon.className = 'fas fa-circle-notch fa-spin';
+  connectionStatusText.textContent = state === 'reconnecting'
+    ? 'Reconectando à sala…'
+    : 'Conectando à sala…';
+});
 
 // Garantir que o evento DOMContentLoaded seja disparado antes de inicializar
 document.addEventListener('DOMContentLoaded', () => {

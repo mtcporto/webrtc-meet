@@ -38,8 +38,15 @@ const configuration = {
   ]
 };
 
-// URL do servidor de sinalização (Cloudflare Worker)
-const SIGNALING_SERVER = 'https://webrtc.mosaicoworkers.workers.dev';
+// Em produção a Vercel atua como proxy para evitar CORS/preflight e problemas
+// de transporte entre navegadores móveis e o domínio workers.dev. Em ambiente
+// local, onde a regra de rewrite não existe, acessamos o Worker diretamente.
+const DIRECT_SIGNALING_SERVER = 'https://webrtc.mosaicoworkers.workers.dev';
+const localDevelopmentHost = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i
+  .test(window.location.hostname);
+const SIGNALING_SERVER = localDevelopmentHost || window.location.protocol === 'file:'
+  ? DIRECT_SIGNALING_SERVER
+  : `${window.location.origin}/api/webrtc`;
 
 // Variáveis globais
 let peerConnections = {}; // Armazena conexões peer
@@ -57,6 +64,10 @@ let lastSignalId = 0;
 let usesSignalIdCursor = false;
 const senderKinds = new WeakMap();
 const signalQueues = new Map();
+const activeSignalingControllers = new Set();
+const SIGNALING_REQUEST_TIMEOUT_MS = 9000;
+const JOIN_MAX_ATTEMPTS = 3;
+let lastPublishedSignalingState = '';
 
 // Variável para armazenar status de áudio e vídeo
 let audioStatus = true;
@@ -69,6 +80,60 @@ let dataChannels = {};
 // Log personalizado
 function log(message) {
   console.log(`[WebRTC ${new Date().toLocaleTimeString()}] ${message}`);
+}
+
+function publishSignalingState(state, detail = {}) {
+  if (state === lastPublishedSignalingState && !detail.force) return;
+  lastPublishedSignalingState = state;
+  window.dispatchEvent(new CustomEvent('signaling-state', {
+    detail: { state, ...detail }
+  }));
+}
+
+function wait(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function signalingRequest(url, options = {}, timeoutMs = SIGNALING_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  activeSignalingControllers.add(controller);
+  let requestTimedOut = false;
+  const timeoutId = setTimeout(() => {
+    requestTimedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      const malformedResponseError = new Error('signaling_invalid_response');
+      malformedResponseError.code = 'signaling_invalid_response';
+      throw malformedResponseError;
+    }
+
+    if (response.ok === false) {
+      const responseError = new Error(data?.error || `signaling_http_${response.status}`);
+      responseError.code = data?.error || 'signaling_http_error';
+      responseError.status = response.status;
+      throw responseError;
+    }
+
+    return data;
+  } catch (error) {
+    if (requestTimedOut) {
+      const timeoutError = new Error('signaling_timeout');
+      timeoutError.name = 'TimeoutError';
+      timeoutError.code = 'signaling_timeout';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    activeSignalingControllers.delete(controller);
+  }
 }
 
 async function configureVideoSender(sender, track) {
@@ -97,11 +162,11 @@ function generateRandomId() {
   return globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2, 11);
 }
 
-function createParticipantIdentity(room) {
+function createParticipantIdentity(room, preferredParticipantId = '', minimumGeneration = 0) {
   const idKey = `webrtc-participant-id:${room}`;
   const generationKey = `webrtc-participant-generation:${room}`;
   const connectionKey = `webrtc-participant-connection:${room}`;
-  let stableParticipantId = generateRandomId();
+  let stableParticipantId = preferredParticipantId || generateRandomId();
   const connectionId = generateRandomId();
   let previousConnection = null;
   let generation = 1;
@@ -113,9 +178,10 @@ function createParticipantIdentity(room) {
       : performance.navigation?.type === 1;
     const storedId = sessionStorage.getItem(idKey);
 
-    if (isReload && storedId) {
-      stableParticipantId = storedId;
+    if (preferredParticipantId || (isReload && storedId)) {
+      stableParticipantId = preferredParticipantId || storedId;
       previousConnection = sessionStorage.getItem(connectionKey);
+      sessionStorage.setItem(idKey, stableParticipantId);
     } else {
       sessionStorage.setItem(idKey, stableParticipantId);
       sessionStorage.setItem(generationKey, '0');
@@ -131,6 +197,17 @@ function createParticipantIdentity(room) {
     console.warn('Nao foi possivel persistir a identidade desta aba:', error);
   }
 
+  // Mantém a ordem das gerações também quando o armazenamento do navegador
+  // está indisponível (modo privado restritivo, quota ou política corporativa).
+  if (preferredParticipantId && generation <= minimumGeneration) {
+    generation = minimumGeneration + 1;
+    try {
+      sessionStorage.setItem(generationKey, String(generation));
+    } catch {
+      // A geração em memória ainda protege esta sessão.
+    }
+  }
+
   return {
     participantId: stableParticipantId,
     connectionId,
@@ -143,75 +220,95 @@ function createParticipantIdentity(room) {
 export async function connectToRoom(room, stream, addRemoteVideo) {
   if (hasDisconnected) return false;
 
-  roomId = normalizeRoomId(room);
-  const identity = createParticipantIdentity(roomId);
+  const nextRoomId = normalizeRoomId(room);
+  const stableIdentityForRetry = roomId === nextRoomId ? participantId : '';
+  const previousUserIdForRetry = stableIdentityForRetry ? userId : '';
+  roomId = nextRoomId;
+  const identity = createParticipantIdentity(
+    roomId,
+    stableIdentityForRetry,
+    stableIdentityForRetry ? connectionGeneration : 0
+  );
   participantId = identity.participantId;
   userId = identity.connectionId;
-  previousConnectionId = identity.previousConnectionId;
+  previousConnectionId = identity.previousConnectionId || previousUserIdForRetry;
   connectionGeneration = identity.generation;
   username = localStorage.getItem('userName') || 'Anônimo';
   localStream = stream;
   
   console.log(`Conectando à sala ${roomId} como ${username} (ID: ${userId})`);
   
-  // Registrar na sala
-  try {
-    const response = await fetch(`${SIGNALING_SERVER}/join`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        room: roomId,
-        id: userId,
-        participantId,
-        previousConnectionId,
-        name: username,
-        generation: connectionGeneration
-      })
+  // As tentativas reutilizam a mesma identidade. O UPSERT de presença no
+  // Worker continua idempotente mesmo se uma resposta se perder no caminho.
+  for (let attempt = 1; attempt <= JOIN_MAX_ATTEMPTS; attempt += 1) {
+    publishSignalingState(attempt === 1 ? 'connecting' : 'reconnecting', {
+      attempt,
+      force: true
     });
-    
-    const data = await response.json();
 
-    // Se a página saiu enquanto o join estava em voo, uma segunda saída após
-    // a resposta garante que um join tardio não recrie presença fantasma.
-    if (hasDisconnected) {
-      notifyLeave();
-      return false;
-    }
-    
-    if (data.success) {
-      console.log(`Conectado ao servidor de sinalização`, data);
+    try {
+      const data = await signalingRequest(`${SIGNALING_SERVER}/join`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          room: roomId,
+          id: userId,
+          participantId,
+          previousConnectionId,
+          name: username,
+          generation: connectionGeneration
+        })
+      });
+
+      // Se a página saiu enquanto o join estava em voo, uma segunda saída após
+      // a resposta garante que um join tardio não recrie presença fantasma.
+      if (hasDisconnected) {
+        notifyLeave();
+        return false;
+      }
+
+      if (!data.success) {
+        const joinError = new Error(data.error || 'signaling_join_failed');
+        joinError.code = data.error || 'signaling_join_failed';
+        throw joinError;
+      }
+
+      console.log('Conectado ao servidor de sinalização', data);
       const initialSignalCursor = Number(data.signalCursor);
       usesSignalIdCursor = Number.isSafeInteger(initialSignalCursor) && initialSignalCursor >= 0;
       lastSignalId = usesSignalIdCursor ? initialSignalCursor : 0;
       publishParticipants(data.users);
-      
-      // Conectar com os usuários existentes - MODIFICAÇÃO AQUI
-      // Ordene por ID para garantir que apenas um lado inicia
+
+      // Apenas um lado inicia a negociação, escolhido pela ordem dos IDs.
       const sortedUsers = [...data.users].sort((a, b) => a.id.localeCompare(b.id));
-      
       sortedUsers.forEach(user => {
         if (user.id !== userId) {
-          // Apenas o peer com ID "menor" alfabeticamente inicia a conexão
           const shouldInitiate = userId < user.id;
           console.log(`Detectado usuário: ${user.name} (${user.id}), iniciando: ${shouldInitiate}`);
           createPeerConnection(user.id, user.name, shouldInitiate, addRemoteVideo);
         }
       });
-      
-      // Começar a consultar o servidor em busca de atualizações
+
+      publishSignalingState('connected');
       startPolling(addRemoteVideo);
-      
       return true;
-    } else {
-      console.error('Falha ao conectar ao servidor de sinalização');
-      return false;
+    } catch (error) {
+      if (hasDisconnected) return false;
+      console.warn(`Tentativa ${attempt}/${JOIN_MAX_ATTEMPTS} de entrar na sala falhou:`, error);
+      if (attempt < JOIN_MAX_ATTEMPTS) {
+        publishSignalingState('reconnecting', { attempt: attempt + 1, force: true });
+        await wait(attempt * 900);
+      }
     }
-  } catch (error) {
-    console.error('Erro ao conectar ao servidor de sinalização:', error);
-    return false;
   }
+
+  // Se algum join expirado ainda chegar ao banco, o tombstone desta mesma
+  // geração impede que ele volte como participante fantasma.
+  notifyLeave();
+  publishSignalingState('unavailable', { force: true });
+  return false;
 }
 
 // Atualiza as tracks enviadas quando o usuário troca câmera ou microfone.
@@ -321,6 +418,7 @@ function startPolling(addRemoteVideo) {
   console.log("Iniciando polling para atualizações");
   isPolling = true;
   lastPollTime = Date.now() - 30000; // Pegue os últimos 30 segundos de sinais para garantir
+  let consecutivePollFailures = 0;
   
   async function poll() {
     if (!isPolling) return;
@@ -340,8 +438,13 @@ function startPolling(addRemoteVideo) {
         pollParams.set('lastId', String(lastSignalId));
       }
       pollUrl.search = pollParams;
-      const response = await fetch(pollUrl);
-      const data = await response.json();
+      const data = await signalingRequest(pollUrl);
+
+      if (!data.success) {
+        const pollError = new Error(data.error || 'signaling_poll_failed');
+        pollError.code = data.error || 'signaling_poll_failed';
+        throw pollError;
+      }
       
       if (data.success) {
         if (data.presenceProtocol === 2 && data.sessionActive === false) {
@@ -388,13 +491,22 @@ function startPolling(addRemoteVideo) {
 
         const serverTime = Number(data.serverTime);
         lastPollTime = Number.isFinite(serverTime) ? serverTime : Date.now();
+        if (consecutivePollFailures > 0) publishSignalingState('connected');
+        consecutivePollFailures = 0;
       }
     } catch (error) {
+      if (!isPolling || hasDisconnected) return;
+      consecutivePollFailures += 1;
+      publishSignalingState('reconnecting');
       console.error("Erro durante polling:", error);
     }
     
-    // Sempre agendar próximo poll, mesmo com erro
-    setTimeout(poll, 2000);
+    // Backoff limitado: recupera automaticamente sem martelar um backend que
+    // esteja indisponível.
+    const nextPollDelay = consecutivePollFailures > 0
+      ? Math.min(2000 * (2 ** Math.min(consecutivePollFailures - 1, 2)), 10000)
+      : 2000;
+    setTimeout(poll, nextPollDelay);
   }
   
   // Iniciar o polling
@@ -510,7 +622,7 @@ async function handleSignal(signal, addRemoteVideo) {
 async function sendSignal(target, type, data) {
   const send = async () => {
     log(`Enviando sinal ${type} para ${target}`);
-    const response = await fetch(`${SIGNALING_SERVER}/signal`, {
+    const result = await signalingRequest(`${SIGNALING_SERVER}/signal`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -525,8 +637,7 @@ async function sendSignal(target, type, data) {
         data
       })
     });
-    
-    const result = await response.json();
+
     if (result.success) {
       log(`Sinal ${type} enviado com sucesso para ${target}`);
     } else {
@@ -831,6 +942,8 @@ export function disconnect() {
 
   log("Desconectando de todas as chamadas");
   isPolling = false;
+  activeSignalingControllers.forEach(controller => controller.abort());
+  activeSignalingControllers.clear();
   notifyLeave();
   
   // Fechar todas as conexões peer
