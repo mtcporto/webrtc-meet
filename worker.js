@@ -6,6 +6,7 @@
 const PARTICIPANT_TTL_MS = 5 * 60 * 1000;
 const PARTICIPANT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
 const SIGNAL_TTL_MS = 2 * 60 * 1000;
+const TURSO_REQUEST_TIMEOUT_MS = 7000;
 
 export default {
   async fetch(request, env) {
@@ -13,20 +14,56 @@ export default {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store'
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers });
     }
 
+    const url = new URL(request.url);
+
+    // Este endpoint não toca no banco. Assim fica possível distinguir um
+    // Worker fora do ar de uma indisponibilidade do Turso.
+    if (url.pathname === '/health' && request.method === 'GET') {
+      return json({
+        success: true,
+        service: 'agoraone-signaling',
+        databaseConfigured: Boolean(env.TURSO_DATABASE_URL && env.TURSO_AUTH_TOKEN)
+      }, 200, headers);
+    }
+
+    if (url.pathname === '/health/database' && request.method === 'GET') {
+      if (!env.TURSO_DATABASE_URL || !env.TURSO_AUTH_TOKEN) {
+        return json({ success: false, error: 'database_not_configured' }, 503, headers);
+      }
+
+      try {
+        await execute(env, [statement('SELECT 1 AS ok')]);
+        return json({ success: true, service: 'agoraone-signaling', database: 'ok' }, 200, headers);
+      } catch (error) {
+        console.error('Database health check failed:', error);
+        return json({ success: false, error: error.code || 'database_unavailable' }, 503, headers);
+      }
+    }
+
+    const knownRoute = (
+      (url.pathname === '/join' && request.method === 'POST')
+      || (url.pathname === '/leave' && request.method === 'POST')
+      || (url.pathname === '/signal' && request.method === 'POST')
+      || (url.pathname === '/poll' && request.method === 'GET')
+    );
+    if (!knownRoute) {
+      return json({ success: false, error: 'not_found' }, 404, headers);
+    }
+
     if (!env.TURSO_DATABASE_URL || !env.TURSO_AUTH_TOKEN) {
-      return json({ success: false, error: 'database_not_configured' }, 500, headers);
+      return json({ success: false, error: 'database_not_configured' }, 503, headers);
     }
 
     try {
       await ensureSchema(env);
-      const url = new URL(request.url);
 
       if (url.pathname === '/join' && request.method === 'POST') {
         return await joinRoom(request, env, headers);
@@ -47,7 +84,7 @@ export default {
       return json({ success: false, error: 'not_found' }, 404, headers);
     } catch (error) {
       console.error('Signaling error:', error);
-      return json({ success: false, error: 'signaling_unavailable' }, 500, headers);
+      return json({ success: false, error: error.code || 'signaling_unavailable' }, 503, headers);
     }
   }
 };
@@ -311,23 +348,49 @@ function ensureSchema(env) {
       statement('CREATE INDEX IF NOT EXISTS participants_v2_active_idx ON participants_v2 (room, active, last_seen)'),
       statement('CREATE INDEX IF NOT EXISTS signals_target_idx ON signals (room, target, created_at)'),
       statement('CREATE INDEX IF NOT EXISTS signals_target_id_idx ON signals (room, target, id)')
-    ]);
+    ]).catch(error => {
+      // Uma promessa rejeitada ou pendurada não pode envenenar este isolate
+      // para sempre. O timeout de execute() encerra a pendência e este reset
+      // permite que a próxima requisição tente novamente.
+      schemaPromise = undefined;
+      throw error;
+    });
   }
   return schemaPromise;
 }
 
 async function execute(env, statements) {
   const baseUrl = env.TURSO_DATABASE_URL.replace(/^libsql:\/\//, 'https://').replace(/\/$/, '');
-  const response = await fetch(`${baseUrl}/v2/pipeline`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.TURSO_AUTH_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      requests: [...statements.map(stmt => ({ type: 'execute', stmt })), { type: 'close' }]
-    })
-  });
+  const controller = new AbortController();
+  let requestTimedOut = false;
+  const timeoutId = setTimeout(() => {
+    requestTimedOut = true;
+    controller.abort();
+  }, TURSO_REQUEST_TIMEOUT_MS);
+  let response;
+
+  try {
+    response = await fetch(`${baseUrl}/v2/pipeline`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.TURSO_AUTH_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        requests: [...statements.map(stmt => ({ type: 'execute', stmt })), { type: 'close' }]
+      }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (requestTimedOut) {
+      const timeoutError = new Error(`Turso did not respond within ${TURSO_REQUEST_TIMEOUT_MS}ms`);
+      timeoutError.code = 'database_timeout';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new Error(`Turso returned HTTP ${response.status}`);

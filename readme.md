@@ -22,6 +22,7 @@ AgoraOne é uma aplicação de videochamadas no navegador. O nome une a ideia da
 - **webrtc.js**: conexões peer-to-peer, sinalização e estado de mídia
 - **styles.css**: identidade visual e layout responsivo
 - **worker.js**: serviço de sinalização em Cloudflare Workers, com estado compartilhado no Turso
+- **vercel.json**: proxy same-origin de `/api/webrtc/*` para o Worker de sinalização
 
 O frontend usa HTML, CSS e JavaScript nativos, com Bootstrap 5, Font Awesome 5 e webrtc-adapter.
 
@@ -36,3 +37,19 @@ Sirva o diretório por HTTPS ou por localhost, requisito das APIs de câmera, mi
 - Navegador moderno com WebRTC
 - Câmera e microfone autorizados
 - Conexão à internet para a sinalização e os servidores STUN/TURN
+
+## Publicação
+
+O frontend publicado na Vercel acessa a sinalização por `/api/webrtc`. A regra em
+`vercel.json` encaminha essas requisições ao Cloudflare Worker sem expor o
+navegador diretamente ao domínio `workers.dev`, evitando CORS/preflight e
+problemas de transporte observados em navegadores móveis.
+
+O `worker.js` precisa ser publicado separadamente no Cloudflare Workers com:
+
+- `TURSO_DATABASE_URL`
+- `TURSO_AUTH_TOKEN`
+
+Depois da publicação, use `/health` para verificar o runtime sem consultar o
+banco e `/health/database` para testar também o Turso. Em produção, os caminhos
+equivalentes são `/api/webrtc/health` e `/api/webrtc/health/database`.

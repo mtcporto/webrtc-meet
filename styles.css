@@ -1055,6 +1055,50 @@ body.call-page {
   transform: translateX(-50%);
 }
 
+.connection-status {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  z-index: 126;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100% - 32px);
+  min-height: 38px;
+  padding: 8px 13px;
+  border: 1px solid rgba(111, 137, 177, 0.28);
+  border-radius: 13px;
+  color: #dce8f8;
+  background: rgba(15, 25, 41, 0.9);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+  font-size: 12px;
+  font-weight: 650;
+  transform: translateX(-50%);
+  backdrop-filter: blur(16px);
+}
+
+.connection-status[data-state="unavailable"] {
+  border-color: rgba(251, 191, 36, 0.34);
+  color: #fff4ca;
+  background: rgba(65, 43, 9, 0.92);
+}
+
+.connection-status i {
+  flex: 0 0 auto;
+  color: var(--accent-color);
+}
+
+.connection-status[data-state="unavailable"] i {
+  color: #fbbf24;
+}
+
+.connection-status span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .presentation-status {
   position: absolute;
   top: 16px;
@@ -1414,8 +1458,14 @@ body.call-page {
   }
 
   .control-group {
+    position: static;
     width: 48px;
     padding-bottom: 9px;
+  }
+
+  .settings-menu-container {
+    position: static;
+    transform: none;
   }
 
   .control-button {
@@ -1431,14 +1481,21 @@ body.call-page {
   }
 
   .settings-menu {
-    position: fixed;
+    position: absolute;
     right: max(14px, env(safe-area-inset-right));
-    bottom: calc(82px + env(safe-area-inset-bottom));
+    bottom: calc(100% + 10px);
     left: max(14px, env(safe-area-inset-left));
     width: auto;
+    max-width: none;
     max-height: calc(100dvh - 170px);
     overflow-y: auto;
     transform: none;
+  }
+
+  .settings-item,
+  .form-select {
+    min-width: 0;
+    max-width: 100%;
   }
 
   .audio-playback-prompt {
@@ -1466,6 +1523,12 @@ body.call-page {
     width: 100%;
     padding: 26px 20px calc(22px + env(safe-area-inset-bottom));
     border-radius: 24px 24px 18px 18px;
+  }
+}
+
+@media (max-width: 768px) and (orientation: portrait) {
+  .main-video-container .video-container:not(.screen-sharing) video {
+    object-fit: cover;
   }
 }
 
