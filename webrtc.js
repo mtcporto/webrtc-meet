@@ -61,6 +61,7 @@ const signalQueues = new Map();
 // Variável para armazenar status de áudio e vídeo
 let audioStatus = true;
 let videoStatus = true;
+let screenShareStatus = false;
 
 // Canal de dados para transmitir status do microfone/câmera entre participantes
 let dataChannels = {};
@@ -68,6 +69,27 @@ let dataChannels = {};
 // Log personalizado
 function log(message) {
   console.log(`[WebRTC ${new Date().toLocaleTimeString()}] ${message}`);
+}
+
+async function configureVideoSender(sender, track) {
+  if (!sender || track?.kind !== 'video') return;
+
+  const isDetailedContent = track.contentHint === 'detail' || track.contentHint === 'text';
+  if (!track.contentHint) {
+    track.contentHint = 'motion';
+  }
+
+  try {
+    const parameters = sender.getParameters();
+    if (!parameters.encodings?.length) return;
+
+    parameters.encodings[0].maxBitrate = isDetailedContent ? 4_000_000 : 2_500_000;
+    parameters.encodings[0].maxFramerate = 30;
+    parameters.degradationPreference = isDetailedContent ? 'maintain-resolution' : 'balanced';
+    await sender.setParameters(parameters);
+  } catch (error) {
+    console.warn('Não foi possível aplicar os parâmetros de qualidade do vídeo:', error);
+  }
 }
 
 // Gera um ID aleatório
@@ -197,29 +219,95 @@ export async function replaceLocalStream(stream) {
   localStream = stream;
   const tracksByKind = new Map(stream.getTracks().map(track => [track.kind, track]));
   await Promise.all(Object.values(peerConnections).flatMap(pc =>
-    pc.getSenders().map(sender => {
+    pc.getSenders().map(async sender => {
       const kind = senderKinds.get(sender) || sender.track?.kind;
       const replacement = kind === 'audio' && !audioStatus ? null : tracksByKind.get(kind);
-      return sender.replaceTrack(replacement || null);
+      await sender.replaceTrack(replacement || null);
+      if (kind === 'video' && replacement) {
+        await configureVideoSender(sender, replacement);
+      }
     })
   ));
 }
 
+// Troca somente a fonte de vídeo, preservando o microfone e o transceiver.
+// O MediaStream também é atualizado para que participantes que entrarem depois
+// recebam a fonte atual (câmera ou apresentação).
+export async function replaceLocalVideoTrack(track) {
+  if (track && track.kind !== 'video') {
+    throw new TypeError('A faixa substituta precisa ser de vídeo.');
+  }
+  if (!localStream) {
+    throw new Error('O stream local ainda não foi inicializado.');
+  }
+
+  const previousVideoTracks = localStream.getVideoTracks();
+  const previousTrack = previousVideoTracks[0] || null;
+  previousVideoTracks.forEach(videoTrack => localStream.removeTrack(videoTrack));
+  if (track) localStream.addTrack(track);
+
+  const getCurrentVideoSenders = () => Object.values(peerConnections).flatMap(pc =>
+    pc.getSenders().filter(sender => (senderKinds.get(sender) || sender.track?.kind) === 'video')
+  );
+  const videoSenders = getCurrentVideoSenders();
+
+  try {
+    await Promise.all(videoSenders.map(async sender => {
+      await sender.replaceTrack(track || null);
+      if (track) await configureVideoSender(sender, track);
+    }));
+  } catch (error) {
+    if (track) localStream.removeTrack(track);
+    previousVideoTracks.forEach(videoTrack => localStream.addTrack(videoTrack));
+    // Um peer pode ter sido criado enquanto os replaces estavam em voo. Refazer
+    // a consulta garante que o rollback tambem alcance esses senders novos.
+    const rollbackVideoSenders = getCurrentVideoSenders();
+    await Promise.allSettled(
+      rollbackVideoSenders.map(sender => sender.replaceTrack(previousTrack))
+    );
+    throw error;
+  }
+
+  return previousTrack;
+}
+
 // Desconecta a track de áudio dos RTCRtpSenders ao mutar. Isso interrompe o
 // envio de RTP imediatamente, em vez de depender só de track.enabled.
-export function setLocalAudioEnabled(enabled) {
-  audioStatus = enabled;
+export async function setLocalAudioEnabled(enabled) {
+  const previousAudioStatus = audioStatus;
   const audioTracks = localStream?.getAudioTracks() || [];
+  const previousTrackStates = new Map(audioTracks.map(track => [track, track.enabled]));
+  const audioTrack = audioTracks[0] || null;
+  if (enabled && !audioTrack) {
+    throw new Error('Nenhuma faixa de microfone está disponível.');
+  }
+
+  audioStatus = enabled;
   audioTracks.forEach(track => {
     track.enabled = enabled;
   });
-  const audioTrack = audioTracks[0] || null;
+  const getCurrentAudioSenders = () => Object.values(peerConnections).flatMap(pc =>
+    pc.getSenders().filter(sender => (
+      (senderKinds.get(sender) || sender.track?.kind) === 'audio'
+    ))
+  );
 
-  return Promise.all(Object.values(peerConnections).flatMap(pc =>
-    pc.getSenders()
-      .filter(sender => (senderKinds.get(sender) || sender.track?.kind) === 'audio')
-      .map(sender => sender.replaceTrack(enabled ? audioTrack : null))
-  ));
+  try {
+    await Promise.all(
+      getCurrentAudioSenders().map(sender => sender.replaceTrack(enabled ? audioTrack : null))
+    );
+  } catch (error) {
+    audioStatus = previousAudioStatus;
+    previousTrackStates.forEach((trackWasEnabled, track) => {
+      track.enabled = trackWasEnabled;
+    });
+    await Promise.allSettled(
+      getCurrentAudioSenders().map(sender => (
+        sender.replaceTrack(previousAudioStatus ? audioTrack : null)
+      ))
+    );
+    throw error;
+  }
 }
 
 function normalizeRoomId(room) {
@@ -485,7 +573,8 @@ function configureStatusDataChannel(pc, dataChannel, peerId) {
     dataChannel.send(JSON.stringify({
       type: 'media-status',
       audio: audioStatus,
-      video: videoStatus
+      video: videoStatus,
+      screenSharing: screenShareStatus
     }));
   };
 
@@ -493,7 +582,7 @@ function configureStatusDataChannel(pc, dataChannel, peerId) {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'media-status') {
-        updateRemoteMediaUI(peerId, data.audio, data.video);
+        updateRemoteMediaUI(peerId, data.audio, data.video, Boolean(data.screenSharing));
       }
     } catch (error) {
       console.error('Erro ao processar mensagem de dados:', error);
@@ -537,6 +626,9 @@ function createPeerConnection(peerId, peerName, initiator, addRemoteVideo) {
     localStream.getTracks().forEach(track => {
       const sender = pc.addTrack(track, localStream);
       senderKinds.set(sender, track.kind);
+      if (track.kind === 'video') {
+        void configureVideoSender(sender, track);
+      }
     });
   }
   
@@ -624,6 +716,13 @@ function createPeerConnection(peerId, peerName, initiator, addRemoteVideo) {
   // Lidar com conexão de dados (quando estabelecida)
   pc.onconnectionstatechange = () => {
     log(`Estado da conexão com ${peerId}: ${pc.connectionState}`);
+    if (pc.connectionState === 'connected') {
+      pc.getSenders().forEach(sender => {
+        if ((senderKinds.get(sender) || sender.track?.kind) === 'video' && sender.track) {
+          void configureVideoSender(sender, sender.track);
+        }
+      });
+    }
   };
   
   // Lidar com streams remotos
@@ -832,25 +931,31 @@ export function getDebugInfo() {
 }
 
 // Função para enviar estado de mídia para outros participantes
-export function updateMediaStatus(audioEnabled, videoEnabled) {
+export function updateMediaStatus(audioEnabled, videoEnabled, screenSharing = false) {
   audioStatus = audioEnabled;
   videoStatus = videoEnabled;
+  screenShareStatus = screenSharing;
   
   // Enviar status para todos os peers conectados
   for (const peerId in peerConnections) {
     if (peerConnections[peerId].dataChannel && 
         peerConnections[peerId].dataChannel.readyState === 'open') {
-      peerConnections[peerId].dataChannel.send(JSON.stringify({
-        type: 'media-status',
-        audio: audioEnabled,
-        video: videoEnabled
-      }));
+      try {
+        peerConnections[peerId].dataChannel.send(JSON.stringify({
+          type: 'media-status',
+          audio: audioEnabled,
+          video: videoEnabled,
+          screenSharing
+        }));
+      } catch (error) {
+        log(`Não foi possível enviar o status de mídia para ${peerId}: ${error.message}`);
+      }
     }
   }
 }
 
 // Função para atualizar UI baseada no status remoto
-export function updateRemoteMediaUI(userId, audioEnabled, videoEnabled) {
+export function updateRemoteMediaUI(userId, audioEnabled, videoEnabled, screenSharing = false) {
   // Atualizar ícone de microfone
   const micStatus = document.querySelector(`#container-${userId} .mic-status`);
   if (micStatus) {
@@ -864,7 +969,17 @@ export function updateRemoteMediaUI(userId, audioEnabled, videoEnabled) {
   const container = document.getElementById(`container-${userId}`);
   if (container) {
     container.classList.toggle('video-off', !videoEnabled);
+    container.classList.toggle('screen-sharing', screenSharing);
   }
+
+  window.dispatchEvent(new CustomEvent('remote-media-status', {
+    detail: {
+      peerId: userId,
+      audio: audioEnabled,
+      video: videoEnabled,
+      screenSharing
+    }
+  }));
 }
 
 // Modificar o handler de novos usuários para criar conexões
