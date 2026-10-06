@@ -18,22 +18,6 @@ const configuration = {
       urls: 'turn:openrelay.metered.ca:443?transport=tcp',
       username: 'openrelayproject',
       credential: 'openrelayproject'
-    },
-    // Adicione esses servidores TURN gratuitos
-    {
-      urls: 'turn:relay.metered.ca:80',
-      username: 'e8d34faf7cb62de234b299da',
-      credential: 'uGP8+dMDCQIK+DRo'
-    },
-    {
-      urls: 'turn:relay.metered.ca:443',
-      username: 'e8d34faf7cb62de234b299da',
-      credential: 'uGP8+dMDCQIK+DRo'
-    },
-    {
-      urls: 'turn:relay.metered.ca:443?transport=tcp',
-      username: 'e8d34faf7cb62de234b299da',
-      credential: 'uGP8+dMDCQIK+DRo'
     }
   ]
 };
