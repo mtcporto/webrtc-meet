@@ -13,6 +13,7 @@ test('signed room capabilities reject tampering, expired sessions and key rotati
 test('credential responses contain temporary relay credentials and never the provider key', async () => {
   const data = await generateTurnServers(env, async (_url, request) => {
     assert.equal(JSON.parse(request.body).ttl, 7200);
+    assert.equal(request.redirect, 'manual');
     return Response.json({ iceServers: [{ urls: ['turns:turn.cloudflare.com:443'], username: 'temporary-user', credential: 'temporary-password' }] });
   });
   assert(!JSON.stringify(data).includes(env.CLOUDFLARE_TURN_KEY_API_TOKEN));

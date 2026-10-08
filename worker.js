@@ -157,7 +157,8 @@ async function turnCredentials(request, env, headers) {
   if (Number(rows(limits[1])[0].count) > 20 || Number(rows(limits[2])[0].count) > 200) return json({ success: false, error: 'rate_limit_exceeded' }, 429, { ...headers, 'Retry-After': '3600' });
   try {
     return json({ success: true, ...await generateTurnServers(env) }, 200, headers);
-  } catch {
+  } catch (error) {
+    console.error('TURN issuance failed', error.name, error.message === 'invalid_turn_response' ? 'invalid_turn_response' : /^turn_provider_http_[0-9]+$/.test(error.message) ? error.message : 'transport_error');
     return json({ success: false, error: 'turn_unavailable' }, 502, headers);
   }
 }

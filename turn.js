@@ -41,10 +41,10 @@ export function allowedTurnOrigin(request) {
 }
 export async function generateTurnServers(env, fetchImpl = fetch) {
   const response = await fetchImpl(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.CLOUDFLARE_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
-    method: 'POST', headers: { Authorization: `Bearer ${env.CLOUDFLARE_TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ttl: TURN_TTL_SECONDS }), signal: AbortSignal.timeout(10000), redirect: 'error',
+    method: 'POST', headers: { Authorization: `Bearer ${env.CLOUDFLARE_TURN_KEY_API_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'AgoraOne-TURN/1.0' },
+    body: JSON.stringify({ ttl: TURN_TTL_SECONDS }), signal: AbortSignal.timeout(10000), redirect: 'manual',
   });
-  if (!response.ok) throw new Error('turn_provider_unavailable');
+  if (!response.ok) throw new Error('turn_provider_http_' + response.status);
   const data = await response.json();
   if (!Array.isArray(data.iceServers) || !data.iceServers.some(s => Array.isArray(s.urls) && s.urls.some(url => /^turns?:/.test(url)) && typeof s.username === 'string' && typeof s.credential === 'string')) throw new Error('invalid_turn_response');
   return { iceServers: data.iceServers, expiresAt: Date.now() + TURN_TTL_SECONDS * 1000 };
