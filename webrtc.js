@@ -1,26 +1,21 @@
-// Configuração dos servidores STUN/TURN públicos
-const configuration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    // Servidores TURN gratuitos adicionais
-    {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
-  ]
-};
+// Private relay credentials are issued for the current active room session.
+const configuration = { iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] };
+let turnSession = null;
+let turnRefreshTimer = null;
+async function refreshTurnConfiguration() {
+  if (!turnSession || hasDisconnected) return;
+  const data = await signalingRequest(`${SIGNALING_SERVER}/ice`, {
+    method: 'POST', headers: { Authorization: `Bearer ${turnSession}` },
+  });
+  configuration.iceServers = data.iceServers;
+  for (const pc of Object.values(peerConnections)) {
+    if (pc.signalingState !== 'closed') pc.setConfiguration({ ...pc.getConfiguration(), iceServers: data.iceServers });
+  }
+  clearTimeout(turnRefreshTimer);
+  turnRefreshTimer = setTimeout(() => {
+    refreshTurnConfiguration().catch(() => window.dispatchEvent(new CustomEvent('turn-unavailable')));
+  }, Math.max(60000, data.expiresAt - Date.now() - 10 * 60 * 1000));
+}
 
 // Em produção a Vercel atua como proxy para evitar CORS/preflight e problemas
 // de transporte entre navegadores móveis e o domínio workers.dev. Em ambiente
@@ -259,7 +254,12 @@ export async function connectToRoom(room, stream, addRemoteVideo) {
         throw joinError;
       }
 
-      console.log('Conectado ao servidor de sinalização', data);
+      turnSession = data.turnSession;
+      if (turnSession) {
+        try { await refreshTurnConfiguration(); }
+        catch { window.dispatchEvent(new CustomEvent('turn-unavailable')); }
+      }
+      console.log('Conectado ao servidor de sinalização');
       const initialSignalCursor = Number(data.signalCursor);
       usesSignalIdCursor = Number.isSafeInteger(initialSignalCursor) && initialSignalCursor >= 0;
       lastSignalId = usesSignalIdCursor ? initialSignalCursor : 0;
@@ -921,6 +921,8 @@ function notifyLeave() {
 }
 
 export function disconnect() {
+  clearTimeout(turnRefreshTimer);
+  turnSession = null;
   if (hasDisconnected) return;
   hasDisconnected = true;
 

@@ -1,3 +1,4 @@
+import { turnConfigured, issueTurnSession, verifyTurnSession, allowedTurnOrigin, generateTurnServers } from './turn.js';
 // Cloudflare Worker de sinalização WebRTC com estado compartilhado no Turso.
 // Configure em Settings > Variables and Secrets:
 // TURSO_DATABASE_URL=https://<database>-<organization>.turso.io
@@ -13,7 +14,7 @@ export default {
     const headers = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store'
     };
@@ -30,7 +31,8 @@ export default {
       return json({
         success: true,
         service: 'agoraone-signaling',
-        databaseConfigured: Boolean(env.TURSO_DATABASE_URL && env.TURSO_AUTH_TOKEN)
+        databaseConfigured: Boolean(env.TURSO_DATABASE_URL && env.TURSO_AUTH_TOKEN),
+        turnConfigured: turnConfigured(env)
       }, 200, headers);
     }
 
@@ -49,7 +51,8 @@ export default {
     }
 
     const knownRoute = (
-      (url.pathname === '/join' && request.method === 'POST')
+      (url.pathname === '/ice' && request.method === 'POST')
+      || (url.pathname === '/join' && request.method === 'POST')
       || (url.pathname === '/leave' && request.method === 'POST')
       || (url.pathname === '/signal' && request.method === 'POST')
       || (url.pathname === '/poll' && request.method === 'GET')
@@ -64,6 +67,10 @@ export default {
 
     try {
       await ensureSchema(env);
+
+      if (url.pathname === '/ice' && request.method === 'POST') {
+        return await turnCredentials(request, env, headers);
+      }
 
       if (url.pathname === '/join' && request.method === 'POST') {
         return await joinRoom(request, env, headers);
@@ -122,9 +129,37 @@ async function joinRoom(request, env, headers) {
   return json({
     success: true,
     users: rows(results[cleanupStatements.length + 3]),
+    turnSession: await issueTurnSession(env, { room, id, participantId, generation }),
     signalCursor: Number(session.signal_cursor || 0),
     presenceProtocol: 2
   }, 200, headers);
+}
+
+async function turnCredentials(request, env, headers) {
+  if (!turnConfigured(env)) return json({ success: false, error: 'turn_not_configured' }, 503, headers);
+  if (!allowedTurnOrigin(request)) return json({ success: false, error: 'invalid_origin' }, 403, headers);
+  const token = request.headers.get('Authorization')?.replace(/^Bearer /, '');
+  const identity = await verifyTurnSession(env, token);
+  if (!identity) return json({ success: false, error: 'authentication_required' }, 401, headers);
+  const now = Date.now();
+  const active = await execute(env, [statement('SELECT 1 AS active FROM participants_v2 WHERE room = ? AND participant_id = ? AND connection_id = ? AND generation = ? AND active = 1 AND last_seen >= ?', [identity.room, identity.participantId, identity.id, identity.generation, now - PARTICIPANT_TTL_MS])]);
+  if (!rows(active[0]).length) return json({ success: false, error: 'session_not_active' }, 403, headers);
+  const ip = request.headers.get('CF-Connecting-IP');
+  if (!ip) return json({ success: false, error: 'client_identity_unavailable' }, 503, headers);
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip)));
+  const ipKey = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+  const bucket = Math.floor(now / 3600000);
+  const limits = await execute(env, [
+    statement('DELETE FROM turn_limits WHERE bucket < ?', [bucket - 24]),
+    statement('INSERT INTO turn_limits (identity, bucket, count) VALUES (?, ?, 1) ON CONFLICT(identity, bucket) DO UPDATE SET count = count + 1 RETURNING count', ['ip:' + ipKey, bucket]),
+    statement('INSERT INTO turn_limits (identity, bucket, count) VALUES (?, ?, 1) ON CONFLICT(identity, bucket) DO UPDATE SET count = count + 1 RETURNING count', ['global', bucket]),
+  ]);
+  if (Number(rows(limits[1])[0].count) > 20 || Number(rows(limits[2])[0].count) > 200) return json({ success: false, error: 'rate_limit_exceeded' }, 429, { ...headers, 'Retry-After': '3600' });
+  try {
+    return json({ success: true, ...await generateTurnServers(env) }, 200, headers);
+  } catch {
+    return json({ success: false, error: 'turn_unavailable' }, 502, headers);
+  }
 }
 
 async function leaveRoom(request, env, headers) {
@@ -342,6 +377,7 @@ let schemaPromise;
 function ensureSchema(env) {
   if (!schemaPromise) {
     schemaPromise = execute(env, [
+      statement('CREATE TABLE IF NOT EXISTS turn_limits (identity TEXT NOT NULL, bucket INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (identity, bucket))'),
       statement('CREATE TABLE IF NOT EXISTS participants (room TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (room, id))'),
       statement('CREATE TABLE IF NOT EXISTS participants_v2 (room TEXT NOT NULL, participant_id TEXT NOT NULL, connection_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT \'\', generation INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, last_seen INTEGER NOT NULL, signal_cursor INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, participant_id), UNIQUE (room, connection_id))'),
       statement('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL, sender TEXT NOT NULL, target TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL)'),
