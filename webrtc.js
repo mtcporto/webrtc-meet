@@ -2,6 +2,16 @@
 const configuration = { iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }] };
 let turnSession = null;
 let turnRefreshTimer = null;
+function scheduleTurnRefresh(delay) {
+  clearTimeout(turnRefreshTimer);
+  if (!turnSession || hasDisconnected) return;
+  turnRefreshTimer = setTimeout(() => {
+    refreshTurnConfiguration().catch(() => {
+      window.dispatchEvent(new CustomEvent('turn-unavailable'));
+      scheduleTurnRefresh(60000);
+    });
+  }, delay);
+}
 async function refreshTurnConfiguration() {
   if (!turnSession || hasDisconnected) return;
   const data = await signalingRequest(`${SIGNALING_SERVER}/ice`, {
@@ -11,10 +21,7 @@ async function refreshTurnConfiguration() {
   for (const pc of Object.values(peerConnections)) {
     if (pc.signalingState !== 'closed') pc.setConfiguration({ ...pc.getConfiguration(), iceServers: data.iceServers });
   }
-  clearTimeout(turnRefreshTimer);
-  turnRefreshTimer = setTimeout(() => {
-    refreshTurnConfiguration().catch(() => window.dispatchEvent(new CustomEvent('turn-unavailable')));
-  }, Math.max(60000, data.expiresAt - Date.now() - 10 * 60 * 1000));
+  scheduleTurnRefresh(Math.max(60000, data.expiresAt - Date.now() - 10 * 60 * 1000));
 }
 
 // Em produção a Vercel atua como proxy para evitar CORS/preflight e problemas
@@ -257,7 +264,7 @@ export async function connectToRoom(room, stream, addRemoteVideo) {
       turnSession = data.turnSession;
       if (turnSession) {
         try { await refreshTurnConfiguration(); }
-        catch { window.dispatchEvent(new CustomEvent('turn-unavailable')); }
+        catch { window.dispatchEvent(new CustomEvent('turn-unavailable')); scheduleTurnRefresh(60000); }
       }
       console.log('Conectado ao servidor de sinalização');
       const initialSignalCursor = Number(data.signalCursor);
