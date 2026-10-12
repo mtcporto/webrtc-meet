@@ -128,10 +128,21 @@ body.login-page {
   min-height: 100dvh;
   overflow-x: hidden;
   overflow-y: auto;
+  background: #050810;
+}
+
+/* Espelha a composição para deixar as pessoas atrás do texto. */
+body.login-page::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transform: scaleX(-1);
   background:
-    radial-gradient(circle at 13% 18%, rgba(83, 76, 214, 0.26), transparent 31rem),
-    radial-gradient(circle at 83% 68%, rgba(30, 176, 178, 0.16), transparent 34rem),
-    linear-gradient(145deg, #09111f 0%, #070b13 55%, #09101b 100%);
+    linear-gradient(90deg, rgba(5, 10, 20, 0.4), rgba(5, 10, 20, 0.5) 55%, rgba(5, 10, 20, 0.48)),
+    linear-gradient(0deg, rgba(5, 8, 16, 0.58), transparent 45%, rgba(5, 8, 16, 0.16)),
+    url("assets/connection-hero.webp") right calc(40px - 10.5vh) / max(100vw, 225vh) auto no-repeat;
 }
 
 body.login-page::before {
@@ -1298,6 +1309,12 @@ body.call-page {
 }
 
 @media (max-width: 768px) {
+  body.login-page::after {
+    background:
+      linear-gradient(180deg, rgba(5, 10, 20, 0.5), rgba(5, 10, 20, 0.7)),
+      url("assets/connection-hero.webp") 78% center / cover no-repeat;
+  }
+
   .landing-shell {
     padding:
       max(20px, env(safe-area-inset-top))
